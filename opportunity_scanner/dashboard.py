@@ -736,8 +736,8 @@ def _render_result_table(results: list[ScanResult], widget_key: str):
         df, width='stretch', hide_index=True, height=min(560, 60 + 36 * len(results)),
         on_select="rerun", selection_mode="single-row", key=widget_key,
         column_config={
-            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
-            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f"),
+            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f", color="auto"),
+            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f", color="auto"),
             "Strength": st.column_config.NumberColumn(format="%.0f"),
             "OI": st.column_config.NumberColumn(format="%.0f"),
             "Momentum": st.column_config.NumberColumn(format="%.0f"),
