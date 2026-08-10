@@ -29,6 +29,7 @@ import ccxt.async_support as ccxt_async
 from ..config import ScannerConfig
 from ..models import MarketSnapshot
 from ..cache import exchange_cache, with_retry
+from ..circuit_breaker import breakers, CircuitOpenError
 from .coingecko_derivatives import CoinGeckoDerivativesProvider
 from .us_spot import USSpotProvider
 
@@ -40,17 +41,39 @@ _DEFAULT_CACHE_TTLS = {
 
 
 class ExchangeDataSource:
-    def __init__(self, config: ScannerConfig, cache_ttls: Optional[Dict[str, float]] = None):
+    def __init__(self, config: ScannerConfig, cache_ttls: Optional[Dict[str, float]] = None,
+                 hyperliquid_failure_threshold: int = 3, hyperliquid_cooldown_seconds: float = 90,
+                 bybit_failure_threshold: int = 3, bybit_cooldown_seconds: float = 90):
         self.config = config
         self.cache_ttls = cache_ttls or dict(_DEFAULT_CACHE_TTLS)
         self.priority: List[str] = list(getattr(config, "market_data_priority", None) or ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"])
 
+        # Explicit 10s timeout (ccxt ms) on both ccxt clients — without
+        # this, a slow-but-not-erroring source pays its full default
+        # timeout on every single call, and with no circuit breaker (see
+        # below) that cost repeats for every coin/data-point in a scan
+        # rather than failing fast after a few tries. This combination —
+        # missing breaker + relying on ccxt's default timeout — is what
+        # actually caused multi-minute scans in production, not a
+        # theoretical concern.
         exchange_cls = getattr(ccxt_async, config.primary_exchange)
-        self.exchange = exchange_cls({"enableRateLimit": True})  # kept for backward compat + as the "bybit" priority slot
-        self._hyperliquid = ccxt_async.hyperliquid({"enableRateLimit": True})
+        self.exchange = exchange_cls({"enableRateLimit": True, "timeout": 10000})  # kept for backward compat + as the "bybit" priority slot
+        self._hyperliquid = ccxt_async.hyperliquid({"enableRateLimit": True, "timeout": 10000})
+        # ccxt's enableRateLimit paces a SEQUENCE of calls, but scan_many
+        # fires many coroutines concurrently via asyncio.gather (every
+        # coin x every data point), and those all reach for the SAME
+        # Hyperliquid client near-simultaneously — enableRateLimit alone
+        # doesn't prevent that. Confirmed as a real cause of 429 Too Many
+        # Requests responses in a live scan, not theoretical. Bounding
+        # actual concurrency with a semaphore fixes what pacing a
+        # sequence can't.
+        self._hyperliquid_semaphore = asyncio.Semaphore(4)
         self._coingecko = CoinGeckoDerivativesProvider()
         self._us_spot = USSpotProvider()
         self._http = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
+
+        self._hyperliquid_breaker = breakers.get("hyperliquid_exchange", failure_threshold=hyperliquid_failure_threshold, cooldown_seconds=hyperliquid_cooldown_seconds)
+        self._bybit_breaker = breakers.get("bybit_exchange", failure_threshold=bybit_failure_threshold, cooldown_seconds=bybit_cooldown_seconds)
 
     async def close(self):
         await self.exchange.close()
@@ -76,12 +99,13 @@ class ExchangeDataSource:
     async def _fetch_ohlcv_from(self, source: str, base: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
         try:
             if source == "hyperliquid":
-                raw = await self._hyperliquid.fetch_ohlcv(f"{base}/USDC:USDC", timeframe=timeframe, limit=limit)
+                async with self._hyperliquid_semaphore:
+                    raw = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ohlcv(f"{base}/USDC:USDC", timeframe=timeframe, limit=limit))
             elif source == "bybit":
-                raw = await self.exchange.fetch_ohlcv(f"{base}/USDT", timeframe=timeframe, limit=limit)
+                raw = await self._bybit_breaker.call(lambda: self.exchange.fetch_ohlcv(f"{base}/USDT", timeframe=timeframe, limit=limit))
             else:
                 return None  # coingecko/coinbase/kraken don't participate in OHLCV — see module docstring
-        except Exception as e:  # noqa: BLE001 — best-effort per-source pull, the chain handles failure
+        except (CircuitOpenError, Exception) as e:  # noqa: BLE001 — best-effort per-source pull, the chain handles failure
             print(f"[exchange:{source}] OHLCV fetch failed for {base} {timeframe}: {e}")
             return None
         if not raw:
@@ -137,7 +161,8 @@ class ExchangeDataSource:
     async def _fetch_ticker_from(self, source: str, base: str) -> Optional[dict]:
         try:
             if source == "hyperliquid":
-                t = await self._hyperliquid.fetch_ticker(f"{base}/USDC:USDC")
+                async with self._hyperliquid_semaphore:
+                    t = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ticker(f"{base}/USDC:USDC"))
                 spread_pct = None
                 if t.get("bid") and t.get("ask") and t["bid"] > 0:
                     spread_pct = (t["ask"] - t["bid"]) / t["bid"] * 100
@@ -156,12 +181,12 @@ class ExchangeDataSource:
                 return {"price": spot.price, "volume_24h_usd": spot.volume_24h_usd or 0.0, "bid_ask_spread_pct": None}
 
             if source == "bybit":
-                t = await self.exchange.fetch_ticker(f"{base}/USDT")
+                t = await self._bybit_breaker.call(lambda: self.exchange.fetch_ticker(f"{base}/USDT"))
                 spread_pct = None
                 if t.get("bid") and t.get("ask") and t["bid"] > 0:
                     spread_pct = (t["ask"] - t["bid"]) / t["bid"] * 100
                 return {"price": t.get("last"), "volume_24h_usd": t.get("quoteVolume") or 0.0, "bid_ask_spread_pct": spread_pct}
-        except Exception as e:  # noqa: BLE001
+        except (CircuitOpenError, Exception) as e:  # noqa: BLE001
             print(f"[exchange:{source}] ticker fetch failed for {base}: {e}")
             return None
         return None
@@ -215,9 +240,10 @@ class ExchangeDataSource:
         for source in self.priority:
             if source == "hyperliquid":
                 try:
-                    oi = await self._hyperliquid.fetch_open_interest(f"{base}/USDC:USDC")
+                    async with self._hyperliquid_semaphore:
+                        oi = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_open_interest(f"{base}/USDC:USDC"))
                     current = oi.get("openInterestValue") if oi else None
-                except Exception as e:  # noqa: BLE001
+                except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                     print(f"[exchange:hyperliquid] OI fetch failed for {base}: {e}")
                     current = None
                 if current is not None:
@@ -262,9 +288,10 @@ class ExchangeDataSource:
         for source in self.priority:
             if source == "hyperliquid":
                 try:
-                    fr = await self._hyperliquid.fetch_funding_rate(f"{base}/USDC:USDC")
+                    async with self._hyperliquid_semaphore:
+                        fr = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_funding_rate(f"{base}/USDC:USDC"))
                     rate = fr.get("fundingRate") if fr else None
-                except Exception as e:  # noqa: BLE001
+                except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                     print(f"[exchange:hyperliquid] funding rate fetch failed for {base}: {e}")
                     rate = None
                 if rate is not None:
@@ -278,9 +305,9 @@ class ExchangeDataSource:
             elif source == "bybit":
                 symbol = f"{base}/{quote}:{quote}"
                 try:
-                    fr = await self.exchange.fetch_funding_rate(symbol)
+                    fr = await self._bybit_breaker.call(lambda: self.exchange.fetch_funding_rate(symbol))
                     rate = fr.get("fundingRate") if fr else None
-                except Exception as e:  # noqa: BLE001
+                except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                     print(f"[exchange:bybit] funding rate fetch failed for {symbol}: {e}")
                     rate = None
                 if rate is not None:
@@ -306,12 +333,14 @@ class ExchangeDataSource:
             return (None, "none")
         symbol = f"{base}{quote}"
         try:
-            resp = await self._http.get(
-                "/v5/market/account-ratio",
-                params={"category": "linear", "symbol": symbol, "period": "1h", "limit": 1},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            async def _get():
+                resp = await self._http.get(
+                    "/v5/market/account-ratio",
+                    params={"category": "linear", "symbol": symbol, "period": "1h", "limit": 1},
+                )
+                resp.raise_for_status()
+                return resp.json()
+            data = await self._bybit_breaker.call(_get)
             rows = data.get("result", {}).get("list", [])
             if not rows:
                 return (None, "none")
