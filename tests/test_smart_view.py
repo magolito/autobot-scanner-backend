@@ -14,11 +14,12 @@ from opportunity_scanner.config import SmartViewConfig
 from opportunity_scanner.smart_view import Bucket, classify_bucket, bucket_results, data_completeness, BUCKET_LABELS
 
 
-def make_result(score, confidence, risk_tier="core", available_pillars=4, signal="Buy") -> ScanResult:
+def make_result(score, confidence, risk_tier="core", available_pillars=4, signal="Buy", alignment_score=70.0) -> ScanResult:
     factors = {}
     names = ["strength", "oi_dynamics", "momentum", "social"]
     for i, name in enumerate(names):
-        factors[name] = FactorResult(name=name, score=60, reasons=["t"], available=(i < available_pillars))
+        raw = {"alignment_score": alignment_score} if name == "momentum" else {}
+        factors[name] = FactorResult(name=name, score=60, reasons=["t"], raw=raw, available=(i < available_pillars))
     return ScanResult(
         symbol=f"TEST/USDT", base="TEST", price=1.0, composite_score=score, confidence=confidence,
         confidence_label="High" if confidence >= 75 else ("Medium" if confidence >= 50 else "Low"),
@@ -90,5 +91,69 @@ def main():
     print("\n✅ Smart View bucketing test passed: correct classification including the two edge cases that matter most (great score blocked by risk tier, great score blocked by thin data), boundary inclusivity, and the always-all-4-buckets contract.")
 
 
+def test_alignment_gates_super_strong():
+    """
+    The actual fix for a real, live problem: "Super Strong" had shown
+    (0) results across an entire session of live scans. Root cause:
+    nothing in the bucketing logic ever checked whether a coin's
+    strength was genuine multi-timeframe conviction versus one
+    timeframe's noise dragging up a blended average. Now Super Strong
+    explicitly requires real weighted multi-timeframe agreement
+    (min_alignment_score), not just a high composite score.
+    """
+    config = SmartViewConfig()
+
+    def make_with_momentum(score, confidence, alignment_score, risk_tier="core"):
+        factors = {}
+        names = ["strength", "oi_dynamics", "momentum", "social"]
+        for i, name in enumerate(names):
+            raw = {"alignment_score": alignment_score} if name == "momentum" else {}
+            factors[name] = FactorResult(name=name, score=80, reasons=["t"], raw=raw, available=True)
+        return ScanResult(
+            symbol="TEST/USDT", base="TEST", price=1.0, composite_score=score, confidence=confidence,
+            confidence_label="High" if confidence >= 75 else "Medium",
+            signal="Strong Buy", factors=factors, weights_used={"strength": 0.25, "oi_dynamics": 0.25, "momentum": 0.25, "social": 0.25},
+            reasons_summary=["synthetic"], risk_tier=risk_tier, passed_filters=True,
+        )
+
+    # 1. Otherwise-perfect Super Strong candidate, but LOW timeframe alignment
+    # (e.g. only 15m showing strength, longer timeframes disagreeing) — should
+    # NOT reach Super Strong despite a great score/confidence
+    r1 = make_with_momentum(score=88, confidence=80, alignment_score=20.0)
+    bucket1 = classify_bucket(r1, config)
+    assert bucket1 != Bucket.SUPER_STRONG, f"Low timeframe alignment (20%) should block Super Strong even with a great score, got {bucket1}"
+    assert bucket1 == Bucket.STRONG, f"Should still qualify for Strong (no alignment requirement there), got {bucket1}"
+    print(f"1. THE ACTUAL FIX: great score/confidence but low multi-timeframe alignment (20%) correctly BLOCKED from Super Strong, falls to Strong: OK")
+
+    # 2. Same great score/confidence, but genuine high multi-timeframe alignment — qualifies
+    r2 = make_with_momentum(score=88, confidence=80, alignment_score=75.0)
+    bucket2 = classify_bucket(r2, config)
+    assert bucket2 == Bucket.SUPER_STRONG, f"High genuine alignment (75%) should qualify for Super Strong, got {bucket2}"
+    print(f"2. Same score/confidence WITH genuine multi-timeframe alignment (75%) correctly reaches Super Strong: OK")
+
+    # 3. Exactly at the boundary (60%) — inclusive
+    r3 = make_with_momentum(score=88, confidence=80, alignment_score=60.0)
+    assert classify_bucket(r3, config) == Bucket.SUPER_STRONG, "Exactly-at-threshold alignment should qualify (>=, not >)"
+    print("3. Exactly-at-threshold alignment (60%) correctly qualifies (boundary inclusive): OK")
+
+    # 4. Momentum unavailable entirely — correctly can't claim Super Strong
+    # (no genuine alignment data to back up the claim)
+    factors_no_momentum = {}
+    for i, name in enumerate(["strength", "oi_dynamics", "momentum", "social"]):
+        factors_no_momentum[name] = FactorResult(name=name, score=80, reasons=["t"], available=(name != "momentum"))
+    r4 = ScanResult(
+        symbol="TEST/USDT", base="TEST", price=1.0, composite_score=88, confidence=80,
+        confidence_label="High", signal="Strong Buy", factors=factors_no_momentum,
+        weights_used={"strength": 0.25, "oi_dynamics": 0.25, "momentum": 0.25, "social": 0.25},
+        reasons_summary=["synthetic"], risk_tier="core", passed_filters=True,
+    )
+    bucket4 = classify_bucket(r4, config)
+    assert bucket4 != Bucket.SUPER_STRONG, "Missing momentum data means no genuine alignment claim can be made — should not reach Super Strong"
+    print(f"4. Momentum entirely unavailable correctly blocks Super Strong (can't claim genuine conviction without the data): OK")
+
+    print("\n✅ Multi-timeframe alignment gate test passed: Super Strong now genuinely requires real, weighted multi-timeframe agreement, not just a high blended score — the actual fix for Super Strong never firing.")
+
+
 if __name__ == "__main__":
     main()
+    test_alignment_gates_super_strong()

@@ -128,15 +128,24 @@ class ConfidenceBands:
 # periodically as market cap rankings and liquidity shift; also editable
 # via settings.yaml without touching code (see Settings.exchange or the
 # dedicated universe_presets section).
+#
+# HYPE added to Majors after a live user report flagged it missing —
+# confirmed via search before adding, not assumed: ~$12-14B market cap,
+# ranked top-10 on CoinGecko as of this update. Also thematically
+# correct, not just objectively major — it's Hyperliquid's own token,
+# and this scanner is now Hyperliquid-first architecturally.
+# PUMP added to High Liquidity/Full Universe after the same report —
+# confirmed real mid-cap (~#53-75 by market cap, $95-150M daily volume),
+# not just a trending name.
 UNIVERSE_PRESETS: Dict[str, List[str]] = {
-    "Majors": ["BTC", "ETH", "SOL", "BNB", "XRP"],
+    "Majors": ["BTC", "ETH", "SOL", "BNB", "XRP", "HYPE"],
     "High Liquidity": [
-        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
-        "TRX", "LTC", "ATOM", "NEAR", "APT", "SUI",
+        "BTC", "ETH", "SOL", "BNB", "XRP", "HYPE", "ADA", "DOGE", "AVAX", "LINK", "DOT",
+        "TRX", "LTC", "ATOM", "NEAR", "APT", "SUI", "PUMP",
     ],
     "Full Universe": [
-        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
-        "TRX", "LTC", "ATOM", "NEAR", "APT", "SUI",
+        "BTC", "ETH", "SOL", "BNB", "XRP", "HYPE", "ADA", "DOGE", "AVAX", "LINK", "DOT",
+        "TRX", "LTC", "ATOM", "NEAR", "APT", "SUI", "PUMP",
         "ARB", "OP", "INJ", "TIA", "SEI", "RENDER", "ICP", "FIL", "UNI", "AAVE",
         "MKR", "PEPE", "WIF", "BONK", "SHIB",
     ],
@@ -181,6 +190,11 @@ class BucketThresholds:
     min_confidence: float
     allowed_risk_tiers: List[str]
     min_data_completeness: float   # fraction of pillars with available=True, 0.0-1.0
+    min_alignment_score: float = 0.0  # 0-100, weighted multi-timeframe agreement (see factors/momentum.py's
+                                       # _compute_alignment) — the actual "is this real conviction, not just one
+                                       # timeframe's noise" gate. 0.0 = no requirement (momentum unavailable is
+                                       # also treated as "no requirement" — this gates on genuine disagreement
+                                       # between timeframes, not on missing data, which data_completeness already covers).
 
 
 @dataclass
@@ -198,16 +212,27 @@ class SmartViewConfig:
     required — a coin can't buy its way into Super Strong with a great
     score alone if the underlying data was thin or the risk tier is
     high_risk. This is what "very selective" means concretely.
+
+    min_alignment_score added directly from a live conversation about
+    what "high conviction" should actually mean: a coin showing strength
+    on one timeframe alone is not the same as one where multiple
+    timeframes genuinely agree. Super Strong now requires real,
+    weighted multi-timeframe agreement (60%+, roughly "at least the
+    higher-weighted timeframes confirming each other"), not just a high
+    blended score that could come from one strong timeframe alone.
     """
     enabled: bool = True
     super_strong: BucketThresholds = field(default_factory=lambda: BucketThresholds(
         min_score=80.0, min_confidence=75.0, allowed_risk_tiers=["core", "small_cap"], min_data_completeness=0.75,
+        min_alignment_score=60.0,
     ))
     strong: BucketThresholds = field(default_factory=lambda: BucketThresholds(
         min_score=65.0, min_confidence=50.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.5,
+        min_alignment_score=0.0,
     ))
     building: BucketThresholds = field(default_factory=lambda: BucketThresholds(
         min_score=45.0, min_confidence=0.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.0,
+        min_alignment_score=0.0,
     ))
     # Anything not meeting even "building"'s thresholds -> High Risk / Low Conviction (no config needed, it's the catch-all)
 

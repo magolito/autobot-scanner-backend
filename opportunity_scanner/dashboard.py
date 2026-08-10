@@ -736,7 +736,7 @@ def _render_result_table(results: list[ScanResult], widget_key: str):
         df, width='stretch', hide_index=True, height=min(560, 60 + 36 * len(results)),
         on_select="rerun", selection_mode="single-row", key=widget_key,
         column_config={
-            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
+            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f", color="gray"),
             "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f", color="auto"),
             "Strength": st.column_config.NumberColumn(format="%.0f"),
             "OI": st.column_config.NumberColumn(format="%.0f"),
@@ -848,6 +848,30 @@ def show_detail(result: ScanResult):
                 st.metric("Sentiment", f"{raw['sentiment']:.0f}%" if raw.get("sentiment") is not None else "—")
             with sm4:
                 st.metric("Dominance", f"{raw['social_dominance']:.1f}%" if raw.get("social_dominance") is not None else "—")
+
+        momentum_factor = result.factors.get("momentum")
+        if momentum_factor and momentum_factor.available and momentum_factor.raw:
+            mraw = momentum_factor.raw
+            alignment_score = mraw.get("alignment_score")
+            direction = mraw.get("dominant_direction", "mixed")
+            aligned_tfs = mraw.get("aligned_timeframes", [])
+            per_tf = mraw.get("per_timeframe", {})
+            if alignment_score is not None:
+                st.markdown('<div class="mono-label" style="margin-top:20px">Timeframe alignment</div>', unsafe_allow_html=True)
+                if direction == "bullish" and alignment_score >= 60:
+                    headline = f"🎯 Real conviction — aligned bullish across {', '.join(aligned_tfs)}"
+                elif direction == "bearish" and alignment_score >= 60:
+                    headline = f"🎯 Real conviction — aligned bearish across {', '.join(aligned_tfs)} (short setup)"
+                elif direction == "mixed" or alignment_score < 40:
+                    headline = "⚠️ Mixed signals — timeframes disagree, low conviction"
+                else:
+                    headline = f"Partial {direction} alignment ({', '.join(aligned_tfs)})"
+                st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:13px;color:#f5f4f0;margin-bottom:8px">{headline} — {alignment_score:.0f}% weighted agreement</div>', unsafe_allow_html=True)
+                if per_tf:
+                    tf_cols = st.columns(len(per_tf))
+                    for col, (tf, score) in zip(tf_cols, sorted(per_tf.items(), key=lambda kv: ["15m", "1h", "4h", "1d"].index(kv[0]) if kv[0] in ["15m", "1h", "4h", "1d"] else 99)):
+                        with col:
+                            st.metric(tf, f"{score:.0f}")
 
     st.markdown('<div class="mono-label" style="margin-top:24px">Thesis</div>', unsafe_allow_html=True)
     thesis_text = " ".join(result.reasons_summary[:4]) if result.reasons_summary else "No explanation available."

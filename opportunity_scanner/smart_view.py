@@ -48,12 +48,26 @@ def data_completeness(result: ScanResult) -> float:
     return available_count / len(result.factors)
 
 
+def _alignment_score(result: ScanResult) -> float:
+    """Weighted multi-timeframe agreement from the momentum pillar (see
+    factors/momentum.py's _compute_alignment) — 0.0 if momentum is
+    unavailable or the field is missing (older cached results). Missing
+    alignment data means "we can't claim genuine multi-timeframe
+    conviction," so it correctly fails any positive min_alignment_score
+    threshold rather than being treated as a free pass."""
+    momentum = result.factors.get("momentum")
+    if not momentum or not momentum.available:
+        return 0.0
+    return momentum.raw.get("alignment_score", 0.0) or 0.0
+
+
 def _meets(result: ScanResult, thresholds: BucketThresholds, completeness: float) -> bool:
     return (
         result.composite_score >= thresholds.min_score
         and result.confidence >= thresholds.min_confidence
         and result.risk_tier in thresholds.allowed_risk_tiers
         and completeness >= thresholds.min_data_completeness
+        and _alignment_score(result) >= thresholds.min_alignment_score
     )
 
 

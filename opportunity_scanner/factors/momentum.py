@@ -194,6 +194,56 @@ def _single_timeframe_score(df: pd.DataFrame) -> Optional[tuple[float, str, dict
     return _clamp(tf_score), note, raw
 
 
+def _classify_direction(score: float, bullish_threshold: float = 55, bearish_threshold: float = 45) -> str:
+    if score > bullish_threshold:
+        return "bullish"
+    if score < bearish_threshold:
+        return "bearish"
+    return "neutral"
+
+
+def _compute_alignment(per_tf_scores: Dict[str, float], timeframe_weights: Dict[str, float]) -> dict:
+    """
+    The actual "is this really strong or just noise on one timeframe"
+    signal — directly implementing the specification: strength on 15m
+    alone means little, but 15m AND 1h AND 4h all agreeing together is
+    real conviction. Graded and weighted, not binary — a coin aligned
+    across 3 of 4 timeframes gets more credit than one aligned on 2,
+    and agreement on longer timeframes (1d/4h) counts for more than 15m
+    alone, reusing the same timeframe_weights already configured for
+    the composite blend (1d=0.35, 4h=0.30, 1h=0.25, 15m=0.10 by
+    default) — so this naturally matches "if it's ALSO showing strength
+    on the 4h, that gives more conviction," not an arbitrary new scale.
+
+    Also directional both ways deliberately — a strongly bearish-aligned
+    coin is exactly as real a signal as a bullish one (a genuine short
+    setup, not just an absence of a long setup), matching the explicit
+    ask to flag "good for short" too, not only "good for long."
+    """
+    directions = {tf: _classify_direction(score) for tf, score in per_tf_scores.items()}
+    bullish_weight = sum(timeframe_weights.get(tf, 0) for tf, d in directions.items() if d == "bullish")
+    bearish_weight = sum(timeframe_weights.get(tf, 0) for tf, d in directions.items() if d == "bearish")
+    total_weight = sum(timeframe_weights.get(tf, 0) for tf in per_tf_scores)
+
+    if total_weight <= 0 or (bullish_weight == 0 and bearish_weight == 0):
+        return {"alignment_score": 0.0, "dominant_direction": "mixed", "aligned_timeframes": [], "directions": directions}
+
+    if bullish_weight >= bearish_weight:
+        dominant, aligned_weight = "bullish", bullish_weight
+    else:
+        dominant, aligned_weight = "bearish", bearish_weight
+
+    alignment_score = round((aligned_weight / total_weight) * 100.0, 1)
+    aligned_timeframes = sorted(
+        [tf for tf, d in directions.items() if d == dominant],
+        key=lambda tf: timeframe_weights.get(tf, 0), reverse=True,
+    )
+    return {
+        "alignment_score": alignment_score, "dominant_direction": dominant,
+        "aligned_timeframes": aligned_timeframes, "directions": directions,
+    }
+
+
 def compute_momentum(snap: MarketSnapshot, tf_config: TimeframeConfig) -> FactorResult:
     per_tf_scores: Dict[str, float] = {}
     reasons: list[str] = []
@@ -242,18 +292,41 @@ def compute_momentum(snap: MarketSnapshot, tf_config: TimeframeConfig) -> Factor
 
     composite = blended * 0.85 + divergence_score * 0.15
 
-    values = list(per_tf_scores.values())
-    if all(v > 55 for v in values):
-        composite = _clamp(composite + 6)
-        reasons.append("All timeframes aligned bullish — consistency bonus applied")
-    elif all(v < 45 for v in values):
-        composite = _clamp(composite - 6)
-        reasons.append("All timeframes aligned bearish — consistency penalty applied")
+    alignment = _compute_alignment(per_tf_scores, tf_config.timeframe_weights)
+
+    if alignment["dominant_direction"] == "bullish":
+        boost = (alignment["alignment_score"] / 100.0) * 15.0
+        composite = _clamp(composite + boost)
+        reasons.append(
+            f"Aligned bullish across {', '.join(alignment['aligned_timeframes'])} "
+            f"({alignment['alignment_score']:.0f}% weighted agreement) — real multi-timeframe conviction, not one timeframe alone"
+        )
+    elif alignment["dominant_direction"] == "bearish":
+        boost = (alignment["alignment_score"] / 100.0) * 15.0
+        composite = _clamp(composite - boost)
+        reasons.append(
+            f"Aligned bearish across {', '.join(alignment['aligned_timeframes'])} "
+            f"({alignment['alignment_score']:.0f}% weighted agreement) — real multi-timeframe conviction on the downside, a genuine short setup, not just an absent long"
+        )
+    else:
+        # Timeframes disagree with each other — deliberately dampen toward
+        # neutral rather than let one strong timeframe carry the score,
+        # matching "don't show me coins for no reason": a coin with
+        # conflicting signals across timeframes deserves LESS confidence,
+        # not the same confidence as one with genuine agreement.
+        pre_dampen = composite
+        composite = composite * 0.85 + 50 * 0.15
+        if abs(pre_dampen - composite) > 1.0:
+            reasons.append("Mixed signals across timeframes — no clear multi-timeframe agreement, conviction dampened toward neutral")
 
     return FactorResult(
         name="momentum",
         score=round(_clamp(composite), 1),
         reasons=reasons,
-        raw={"per_timeframe": per_tf_scores, "divergence_score": divergence_score},
+        raw={
+            "per_timeframe": per_tf_scores, "divergence_score": divergence_score,
+            "alignment_score": alignment["alignment_score"], "dominant_direction": alignment["dominant_direction"],
+            "aligned_timeframes": alignment["aligned_timeframes"],
+        },
         available=True,
     )

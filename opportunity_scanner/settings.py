@@ -85,6 +85,7 @@ class BucketThresholdSettings(BaseModel):
     min_confidence: float
     allowed_risk_tiers: List[str]
     min_data_completeness: float
+    min_alignment_score: float = 0.0
 
 
 class SmartViewSettings(BaseModel):
@@ -93,12 +94,15 @@ class SmartViewSettings(BaseModel):
     enabled: bool = True
     super_strong: BucketThresholdSettings = BucketThresholdSettings(
         min_score=80.0, min_confidence=75.0, allowed_risk_tiers=["core", "small_cap"], min_data_completeness=0.75,
+        min_alignment_score=60.0,
     )
     strong: BucketThresholdSettings = BucketThresholdSettings(
         min_score=65.0, min_confidence=50.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.5,
+        min_alignment_score=0.0,
     )
     building: BucketThresholdSettings = BucketThresholdSettings(
         min_score=45.0, min_confidence=0.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.0,
+        min_alignment_score=0.0,
     )
 
 
