@@ -100,6 +100,9 @@ class OpportunityScanner:
             "momentum": compute_momentum(snap, self.config.timeframe_config),
             "social": compute_social(snap),
         }
+        unavailable = [name for name, f in factors.items() if not f.available]
+        if unavailable:
+            print(f"[scanner] {base}: {len(unavailable)}/4 pillars unavailable this scan ({', '.join(unavailable)}) — weight redistributed to the remaining pillars")
 
         composite, confidence, confidence_label, signal, weights_used, reasons_summary = combine_factors(
             factors, self.config.weights, self.config.signal_bands, self.config.confidence_bands
@@ -163,23 +166,34 @@ class OpportunityScanner:
         if not bases:
             return []
 
-        # BTC snapshot first — every other coin's relative strength needs it,
-        # and the regime filter is computed from BTC's own momentum + volatility
-        btc_snap = await self.exchange_source.build_snapshot(base="BTC")
-        regime = compute_market_regime(btc_snap, self.config.timeframe_config, self.config.regime_config)
+        # Activate scan-cycle memoization for the whole batch — see
+        # ExchangeDataSource.build_snapshot's docstring for the real bug
+        # this fixes (redundant sector-peer re-fetching multiplying total
+        # work 5-8x, the actual cause of a live 10-30 minute scan report,
+        # not just a concurrency limit issue). Guaranteed to deactivate
+        # even if the scan raises, so a failed scan can't leave memoization
+        # permanently stuck on for later one-off calls.
+        self.exchange_source.start_scan_cycle()
+        try:
+            # BTC snapshot first — every other coin's relative strength needs it,
+            # and the regime filter is computed from BTC's own momentum + volatility
+            btc_snap = await self.exchange_source.build_snapshot(base="BTC")
+            regime = compute_market_regime(btc_snap, self.config.timeframe_config, self.config.regime_config)
 
-        tasks = [
-            self.scan_symbol(
-                base=b,
-                market_cap_usd=market_caps.get(b),
-                market_cap_rank=market_cap_ranks.get(b),
-                exchange_listings=exchange_listings.get(b, 1),
-                btc_snapshot=btc_snap,
-                regime=regime,
-            )
-            for b in bases
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            tasks = [
+                self.scan_symbol(
+                    base=b,
+                    market_cap_usd=market_caps.get(b),
+                    market_cap_rank=market_cap_ranks.get(b),
+                    exchange_listings=exchange_listings.get(b, 1),
+                    btc_snapshot=btc_snap,
+                    regime=regime,
+                )
+                for b in bases
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self.exchange_source.end_scan_cycle()
 
         clean: List[ScanResult] = []
         for base, r in zip(bases, results):

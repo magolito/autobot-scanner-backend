@@ -74,6 +74,11 @@ class ExchangeDataSource:
 
         self._hyperliquid_breaker = breakers.get("hyperliquid_exchange", failure_threshold=hyperliquid_failure_threshold, cooldown_seconds=hyperliquid_cooldown_seconds)
         self._bybit_breaker = breakers.get("bybit_exchange", failure_threshold=bybit_failure_threshold, cooldown_seconds=bybit_cooldown_seconds)
+        # None = memoization inactive (every build_snapshot call fetches
+        # fresh, correct for one-off calls); set to {} via
+        # start_scan_cycle() for the duration of a scan_many() batch, see
+        # build_snapshot's docstring for why this exists.
+        self._scan_cycle_tasks: Optional[Dict[str, "asyncio.Task"]] = None
 
     async def close(self):
         await self.exchange.close()
@@ -361,6 +366,72 @@ class ExchangeDataSource:
     # --------------------------------------------------------- orchestrator
 
     async def build_snapshot(
+        self,
+        base: str,
+        quote: Optional[str] = None,
+        market_cap_usd: Optional[float] = None,
+        exchange_listings: int = 1,
+    ) -> MarketSnapshot:
+        """
+        Memoizing wrapper — the actual fix for a real production report:
+        scans still taking 10-30 minutes even after concurrency limits
+        were correctly capped. Root cause: scanner.py's sector-relative-
+        strength calc fetches a FULL snapshot for every sector peer of
+        every scanned coin, with zero deduplication — the "l1" sector
+        alone has 8 coins, so scanning all 8 doesn't do 8 fetches, it
+        does 8 primary + 8×7=56 redundant peer fetches = 64 total for 8
+        unique symbols. Concurrency limits cap how many things happen at
+        once; they don't reduce how much total work exists — this fixes
+        the actual total work.
+
+        Uses asyncio.Task-based deduplication (not a plain dict cache)
+        specifically to handle the concurrent case correctly: scan_many
+        runs many coins' scans concurrently via asyncio.gather, so two
+        coins that both list the same peer could otherwise both see an
+        empty cache at the same instant and both start a redundant
+        fetch (a classic check-then-act race). Storing the in-flight
+        Task itself means every concurrent caller for the same symbol
+        awaits the SAME task — the underlying fetch runs exactly once
+        no matter how many callers want it, guaranteed by asyncio's Task
+        semantics, not by a lock we have to get right ourselves.
+
+        Only active during an explicit scan cycle (see start_scan_cycle/
+        end_scan_cycle in scan_many) — outside of that, every call does
+        a real, independent fetch as before, so ad-hoc single-symbol
+        callers aren't affected.
+
+        One accepted imprecision, not a correctness bug: if the SAME
+        symbol is requested with different market_cap_usd/exchange_
+        listings by different callers (e.g. as a primary scan target vs.
+        as someone's sector peer, which doesn't pass market_cap_usd at
+        all), whichever call started the fetch first "wins" those two
+        fields for every caller sharing that memoized result. market_cap_
+        usd only feeds a niche OI/mcap dampener, not the core score, so
+        this is a reasonable, deliberate tradeoff — deduplicating by a
+        richer cache key (including these params) would mean primary-
+        scan and peer-fetch calls almost never share a cache entry,
+        defeating the entire point of this fix.
+        """
+        if self._scan_cycle_tasks is not None:
+            if base not in self._scan_cycle_tasks:
+                self._scan_cycle_tasks[base] = asyncio.ensure_future(
+                    self._build_snapshot_uncached(base, quote, market_cap_usd, exchange_listings)
+                )
+            return await self._scan_cycle_tasks[base]
+        return await self._build_snapshot_uncached(base, quote, market_cap_usd, exchange_listings)
+
+    def start_scan_cycle(self):
+        """Call once at the start of a scan_many() batch — activates
+        memoization for its duration."""
+        self._scan_cycle_tasks = {}
+
+    def end_scan_cycle(self):
+        """Call once the batch finishes — subsequent calls to
+        build_snapshot go back to always fetching fresh, correct for
+        one-off calls outside a batch scan."""
+        self._scan_cycle_tasks = None
+
+    async def _build_snapshot_uncached(
         self,
         base: str,
         quote: Optional[str] = None,
