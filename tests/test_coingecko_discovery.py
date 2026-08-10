@@ -102,6 +102,103 @@ async def main():
 
     print("\n✅ CoinGecko discovery test passed: real API shapes parsed correctly, trending-first deduplication, the performance-bounding max_size cap genuinely enforced, and graceful degradation when one or both sources fail.")
 
+    await test_market_cap_lookup_and_stablecoin_filter()
+    await test_market_overview_and_shared_cache()
+
+
+async def test_market_cap_lookup_and_stablecoin_filter():
+    """
+    Two real bugs found from a live scan screenshot: (1) risk_tier
+    unconditionally defaults to high_risk when market_cap_rank is
+    missing, and market cap data was never wired through to any scan at
+    all; (2) stablecoins (USDT/USDC/etc.) showed up in Trending Now
+    discovery results, which is meaningless — a pegged asset has no
+    momentum signal to surface.
+    """
+    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider, KNOWN_STABLECOINS, discovery_cache
+    from opportunity_scanner.circuit_breaker import breakers
+    await breakers.get("coingecko_discovery")._record_success()
+
+    provider = CoinGeckoDiscoveryProvider()
+
+    # 1. Market cap lookup correctly parsed from the real /coins/markets shape
+    async def fake_markets_raw(top_n):
+        return [
+            {"id": "bitcoin", "symbol": "btc", "market_cap_rank": 1, "market_cap": 1_200_000_000_000},
+            {"id": "solana", "symbol": "sol", "market_cap_rank": 5, "market_cap": 80_000_000_000},
+        ]
+    provider._get_market_cap_lookup_raw = fake_markets_raw
+    lookup = await provider.get_market_cap_lookup(top_n=250)
+    assert lookup["BTC"] == (1, 1_200_000_000_000)
+    assert lookup["SOL"] == (5, 80_000_000_000)
+    print(f"1. Market cap lookup correctly parsed real API shape: BTC rank={lookup['BTC'][0]}, SOL rank={lookup['SOL'][0]}: OK")
+
+    # 2. A coin NOT in the top-N lookup correctly isn't found (falls through to high_risk elsewhere, correctly)
+    assert "SOMEOBSCURECOIN" not in lookup
+    print("2. A genuinely obscure coin outside the top-N correctly isn't found (falls through to high_risk correctly, not a bug for THAT case): OK")
+
+    # 3. Stablecoins are correctly excluded from discovery
+    await discovery_cache.invalidate("trending")
+    await discovery_cache.invalidate("top_volume:2")
+    async def trending_with_stablecoins():
+        return {"coins": [{"item": {"symbol": "sol"}}, {"item": {"symbol": "usdt"}}, {"item": {"symbol": "usdc"}}, {"item": {"symbol": "hype"}}]}
+    async def volume_with_stablecoins(limit):
+        return [{"symbol": "usd1"}, {"symbol": "btc"}]
+    provider._get_trending_raw = trending_with_stablecoins
+    provider._get_top_volume_raw = volume_with_stablecoins
+    universe = await provider.discover_universe(max_size=25, top_volume_count=2)
+    assert "USDT" not in universe and "USDC" not in universe and "USD1" not in universe, f"Stablecoins should be filtered out, got {universe}"
+    assert set(universe) == {"SOL", "HYPE", "BTC"}
+    print(f"3. Stablecoins correctly filtered from discovery results: {universe} (no USDT/USDC/USD1): OK")
+
+    await breakers.get("coingecko_discovery")._record_success()
+    await provider.close()
+    print("\n✅ Market cap lookup + stablecoin filter test passed.")
+
+
+async def test_market_overview_and_shared_cache():
+    """
+    get_market_overview() — the actual fix for "I want to see volume and
+    live prices" for Trending Now. Also proves it shares its underlying
+    fetch with get_market_cap_lookup() (same cache key), so calling both
+    in one request only does one real network call, not two.
+    """
+    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider, discovery_cache
+    from opportunity_scanner.circuit_breaker import breakers
+    await breakers.get("coingecko_discovery")._record_success()
+    await discovery_cache.invalidate("market_overview:250")
+
+    provider = CoinGeckoDiscoveryProvider()
+    call_count = {"value": 0}
+
+    async def fake_markets_raw(top_n):
+        call_count["value"] += 1
+        return [
+            {"symbol": "sol", "current_price": 145.32, "total_volume": 3_200_000_000,
+             "price_change_percentage_24h": 8.4, "high_24h": 149.10, "low_24h": 132.50, "market_cap_rank": 5},
+        ]
+    provider._get_market_cap_lookup_raw = fake_markets_raw
+
+    # 1. Real fields correctly parsed
+    overview = await provider.get_market_overview(top_n=250)
+    assert overview["SOL"]["price"] == 145.32
+    assert overview["SOL"]["volume_24h_usd"] == 3_200_000_000
+    assert overview["SOL"]["change_24h_pct"] == 8.4
+    assert overview["SOL"]["high_24h"] == 149.10
+    assert overview["SOL"]["low_24h"] == 132.50
+    print(f"1. get_market_overview() correctly returns real price/volume/change/high-low data: {overview['SOL']}: OK")
+
+    # 2. Shares the underlying fetch with get_market_cap_lookup — only ONE real call for both
+    assert call_count["value"] == 1, "get_market_overview should have triggered exactly one real fetch so far"
+    lookup = await provider.get_market_cap_lookup(top_n=250)
+    assert lookup["SOL"] == (5, None)  # this fake response doesn't set market_cap, only market_cap_rank
+    assert call_count["value"] == 1, f"get_market_cap_lookup() should reuse the SAME cached fetch as get_market_overview() (same cache key) — expected still 1 real call, got {call_count['value']}"
+    print("2. get_market_overview() and get_market_cap_lookup() correctly share the same underlying cached fetch — calling both costs only 1 real network call, not 2: OK")
+
+    await breakers.get("coingecko_discovery")._record_success()
+    await provider.close()
+    print("\n✅ Market overview test passed.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

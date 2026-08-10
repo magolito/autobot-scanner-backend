@@ -33,12 +33,16 @@ def main():
             os.remove(p)
 
     original_discover = CoinGeckoDiscoveryProvider.discover_universe
+    original_overview = CoinGeckoDiscoveryProvider.get_market_overview
 
     try:
         # 1. Selecting Trending Now triggers real discovery
         async def fake_discover(self, max_size=25, top_volume_count=20):
             return ["HYPE", "PUMP", "BTC", "ETH", "SOL"]
+        async def fake_overview(self, top_n=250):
+            return {}  # empty is fine for this test — it's checking discovery, not the preview table's data
         CoinGeckoDiscoveryProvider.discover_universe = fake_discover
+        CoinGeckoDiscoveryProvider.get_market_overview = fake_overview
 
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=20)
@@ -53,8 +57,8 @@ def main():
         assert not at.exception
 
         captions = [c.value for c in at.caption]
-        assert any("HYPE" in c and "PUMP" in c and "Live-discovered" in c for c in captions), f"Expected discovered coins shown, got: {captions}"
-        print("1. Selecting 'Trending Now' triggers real discovery and shows the actual discovered coins (HYPE, PUMP, etc.), not a static list: OK")
+        assert any("Live-discovered" in c and "5 coins" in c for c in captions), f"Expected the discovery caption, got: {captions}"
+        print("1. Selecting 'Trending Now' triggers real discovery and shows a live-discovered count, not a static list: OK")
 
         # 2. Discovery failure gracefully falls back
         async def failing_discover(self, max_size=25, top_volume_count=20):
@@ -87,6 +91,7 @@ def main():
 
     finally:
         CoinGeckoDiscoveryProvider.discover_universe = original_discover
+        CoinGeckoDiscoveryProvider.get_market_overview = original_overview
         for k in ["APP_DB_PATH", "STORAGE__DB_PATH"]:
             os.environ.pop(k, None)
         for p in (APP_DB, SCAN_DB):

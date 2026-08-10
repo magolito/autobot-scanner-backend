@@ -225,6 +225,16 @@ SIGNAL_BAR_COLOR = {
     "Caution": "#fbbf24", "Strong Avoid": "#f87171",
 }
 
+# Table-cell indicators — st.dataframe can't reliably do per-cell
+# background coloring alongside row-selection, so a colored circle
+# prefixed directly into the text is the practical, always-rendering
+# equivalent. Matches SIGNAL_BAR_COLOR's green/gray/yellow/red scheme.
+SIGNAL_INDICATOR = {
+    "Strong Buy": "🟢", "Buy": "🟢", "Neutral": "⚪",
+    "Caution": "🟡", "Strong Avoid": "🔴",
+}
+RISK_INDICATOR = {"core": "🟢", "small_cap": "🟡", "high_risk": "🔴"}
+
 MODE_TIMEFRAME_WEIGHTS = {
     "Scalp": {"15m": 0.35, "1h": 0.35, "4h": 0.20, "1d": 0.10},
     "Swing": {"15m": 0.05, "1h": 0.15, "4h": 0.35, "1d": 0.45},
@@ -281,13 +291,40 @@ async def _run_scan_async(settings, mode: str, universe: list[str]) -> list[Scan
     config = settings.to_scanner_config()
     config.timeframe_config.timeframe_weights = dict(MODE_TIMEFRAME_WEIGHTS[mode])
 
+    # Real fix for a genuinely significant, previously-undiscovered bug:
+    # risk_tier classification unconditionally returns "high_risk" when
+    # market_cap_rank is missing, and this dashboard has NEVER supplied
+    # market cap data to any scan, static presets or Trending Now, since
+    # it was first built — every coin in every scan has always been
+    # forced into high_risk regardless of its real standing. One extra
+    # CoinGecko call (cached, same pattern as discovery) fixes this for
+    # every genuinely-ranked coin; a coin truly outside the top 250 by
+    # market cap correctly still falls through to high_risk, which is
+    # the right outcome for an actually obscure/tiny asset.
+    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
+    market_caps, market_cap_ranks = {}, {}
+    mcap_provider = CoinGeckoDiscoveryProvider()
+    try:
+        lookup = await mcap_provider.get_market_cap_lookup(top_n=250)
+        for base in universe:
+            entry = lookup.get(base.upper())
+            if entry:
+                rank, cap = entry
+                if rank is not None:
+                    market_cap_ranks[base] = rank
+                if cap is not None:
+                    market_caps[base] = cap
+    finally:
+        await mcap_provider.close()
+
     scanner = OpportunityScanner(
         config, whale_api_key=settings.whale_alert_api_key,
         cache_ttls=settings.to_cache_ttls(),
     )
     try:
         results = await scanner.scan_many(
-            universe, include_filtered=True,
+            universe, market_caps=market_caps, market_cap_ranks=market_cap_ranks,
+            include_filtered=True,
             blacklist=settings.universe.blacklist, whitelist=settings.universe.whitelist,
         )
     finally:
@@ -318,6 +355,27 @@ def discover_trending_universe(max_size: int = 25) -> list[str]:
             await provider.close()
 
     return asyncio.run(_discover())
+
+
+def fetch_trending_overview(symbols: list[str]) -> dict:
+    """
+    Live price/volume/24h-range preview for the discovered universe —
+    reuses the exact same cached CoinGecko fetch as the risk-tier market
+    cap fix (get_market_overview shares a cache entry with
+    get_market_cap_lookup), so this doesn't cost an extra network call
+    beyond what a scan would already make.
+    """
+    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
+
+    async def _fetch():
+        provider = CoinGeckoDiscoveryProvider()
+        try:
+            overview = await provider.get_market_overview(top_n=250)
+            return {s: overview[s] for s in symbols if s in overview}
+        finally:
+            await provider.close()
+
+    return asyncio.run(_fetch())
 
 
 def hydrate_from_storage(storage: ScanStorage) -> tuple[list[ScanResult], Optional[datetime]]:
@@ -491,18 +549,55 @@ if st.session_state.universe_preset == "🔥 Trending Now":
         with st.spinner("Discovering trending + high-volume coins..."):
             discovered = discover_trending_universe(max_size=25)
         st.session_state.trending_universe_cache = discovered
+        st.session_state.pop("trending_overview_cache", None)  # force a fresh overview fetch to match
     active_universe = st.session_state.trending_universe_cache
     refresh_col, caption_col = st.columns([0.15, 0.85])
     with refresh_col:
         if st.button("↻ Refresh", key="refresh_trending"):
             st.session_state.pop("trending_universe_cache", None)
+            st.session_state.pop("trending_overview_cache", None)
             st.rerun()
     with caption_col:
-        if active_universe:
-            st.caption(f"Live-discovered from CoinGecko trending + top volume: {', '.join(active_universe)}")
-        else:
+        if not active_universe:
             st.warning("Trending discovery unavailable right now (CoinGecko unreachable) — falling back to High Liquidity.")
             active_universe = UNIVERSE_PRESETS["High Liquidity"]
+            discovery_failed = True
+        else:
+            st.caption(f"Live-discovered from CoinGecko trending + top volume ({len(active_universe)} coins)")
+            discovery_failed = False
+
+    if active_universe and not discovery_failed:
+        if "trending_overview_cache" not in st.session_state:
+            with st.spinner("Loading live prices and volume..."):
+                st.session_state.trending_overview_cache = fetch_trending_overview(active_universe)
+        overview = st.session_state.trending_overview_cache
+        preview_rows = []
+        for sym in active_universe:
+            data = overview.get(sym)
+            preview_rows.append({
+                "Symbol": sym,
+                "Price": data["price"] if data and data.get("price") is not None else None,
+                "24h Change": data["change_24h_pct"] if data and data.get("change_24h_pct") is not None else None,
+                "24h Volume": data["volume_24h_usd"] if data and data.get("volume_24h_usd") is not None else None,
+                "24h High": data["high_24h"] if data and data.get("high_24h") is not None else None,
+                "24h Low": data["low_24h"] if data and data.get("low_24h") is not None else None,
+                "MCap Rank": data["market_cap_rank"] if data and data.get("market_cap_rank") is not None else None,
+            })
+        preview_df = pd.DataFrame(preview_rows)
+        st.dataframe(
+            preview_df, width='stretch', hide_index=True, height=min(300, 45 + 36 * len(preview_rows)),
+            column_config={
+                "Price": st.column_config.NumberColumn(format="$%.4f"),
+                "24h Change": st.column_config.NumberColumn(format="%+.2f%%"),
+                "24h Volume": st.column_config.NumberColumn(format="$%,.0f"),
+                "24h High": st.column_config.NumberColumn(format="$%.4f"),
+                "24h Low": st.column_config.NumberColumn(format="$%.4f"),
+                "MCap Rank": st.column_config.NumberColumn(format="%d"),
+            },
+        )
+        missing = [s for s in active_universe if s not in overview]
+        if missing:
+            st.caption(f"No live market data found for: {', '.join(missing)} (likely outside CoinGecko's top 250 by market cap)")
 elif st.session_state.universe_preset == "Custom":
     custom_default = _user.last_universe_custom or ",".join(_settings.universe.default)
     custom_universe_input = st.text_input(
@@ -623,13 +718,15 @@ def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
         f = r.factors
         social_available = f["social"].available
         rows.append({
-            "Rank": i, "Symbol": r.base, "Score": r.composite_score, "Signal": r.signal,
+            "Rank": i, "Symbol": r.base, "Score": r.composite_score,
+            "Signal": f"{SIGNAL_INDICATOR.get(r.signal, '⚪')} {r.signal}",
             "Confidence": r.confidence, "Strength": f["strength"].score if f["strength"].available else None,
             "OI": f["oi_dynamics"].score if f["oi_dynamics"].available else None,
             "Momentum": f["momentum"].score if f["momentum"].available else None,
             "Social": f["social"].score if social_available else None,
             "Narrative": f["social"].raw.get("narrative_signal", "—") if social_available else "—",
-            "Price": r.price, "Risk": r.risk_tier,
+            "Price": r.price,
+            "Risk": f"{RISK_INDICATOR.get(r.risk_tier, '⚪')} {r.risk_tier}",
         })
     return pd.DataFrame(rows)
 
