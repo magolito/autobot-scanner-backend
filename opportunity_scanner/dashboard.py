@@ -299,6 +299,27 @@ def run_scan(settings, mode: str, universe: list[str]) -> list[ScanResult]:
     return asyncio.run(_run_scan_async(settings, mode, universe))
 
 
+def discover_trending_universe(max_size: int = 25) -> list[str]:
+    """
+    The actual fix for "the scanner only knows coins I hardcoded" — live
+    discovery via CoinGecko's trending-search + top-volume rankings,
+    not a fixed list. The provider has its own 15-minute cache
+    internally, so repeat calls within that window are cheap; this
+    function's own job is just the async->sync bridge, same pattern as
+    run_scan above.
+    """
+    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
+
+    async def _discover():
+        provider = CoinGeckoDiscoveryProvider()
+        try:
+            return await provider.discover_universe(max_size=max_size)
+        finally:
+            await provider.close()
+
+    return asyncio.run(_discover())
+
+
 def hydrate_from_storage(storage: ScanStorage) -> tuple[list[ScanResult], Optional[datetime]]:
     """
     Rebuilds ScanResult objects from the most recent stored scan per
@@ -421,7 +442,7 @@ def _preset_slug(display_name: str) -> str:
 
 
 def _preset_from_slug(slug: str) -> str:
-    for display_name in list(UNIVERSE_PRESETS.keys()) + ["Custom"]:
+    for display_name in ["🔥 Trending Now"] + list(UNIVERSE_PRESETS.keys()) + ["Custom"]:
         if _preset_slug(display_name) == slug:
             return display_name
     return DEFAULT_UNIVERSE_PRESET
@@ -447,15 +468,17 @@ with top_r:
         mode = st.selectbox("Mode", ["Scalp", "Swing"], index=["Scalp", "Swing"].index(st.session_state.mode), label_visibility="collapsed")
         st.session_state.mode = mode
     with c2:
-        preset_names = list(UNIVERSE_PRESETS.keys()) + ["Custom"]
+        preset_names = ["🔥 Trending Now"] + list(UNIVERSE_PRESETS.keys()) + ["Custom"]
         if "universe_preset" not in st.session_state:
             st.session_state.universe_preset = _preset_from_slug(_user.last_universe_preset)
         selected_preset = st.selectbox(
-            "Universe", preset_names, index=preset_names.index(st.session_state.universe_preset),
+            "Universe", preset_names, index=preset_names.index(st.session_state.universe_preset) if st.session_state.universe_preset in preset_names else preset_names.index(DEFAULT_UNIVERSE_PRESET),
             label_visibility="collapsed", key="universe_preset_select",
         )
         if selected_preset != st.session_state.universe_preset:
             st.session_state.universe_preset = selected_preset
+            if selected_preset == "🔥 Trending Now":
+                st.session_state.pop("trending_universe_cache", None)  # force a fresh fetch on switch
             _app_storage.save_universe_preference(
                 _user.id, _preset_slug(selected_preset),
                 _user.last_universe_custom if selected_preset == "Custom" else None,
@@ -463,7 +486,24 @@ with top_r:
     with c3:
         scan_clicked = st.button("⟳ Scan Now", width='stretch', disabled=not _access.allowed)
 
-if st.session_state.universe_preset == "Custom":
+if st.session_state.universe_preset == "🔥 Trending Now":
+    if "trending_universe_cache" not in st.session_state:
+        with st.spinner("Discovering trending + high-volume coins..."):
+            discovered = discover_trending_universe(max_size=25)
+        st.session_state.trending_universe_cache = discovered
+    active_universe = st.session_state.trending_universe_cache
+    refresh_col, caption_col = st.columns([0.15, 0.85])
+    with refresh_col:
+        if st.button("↻ Refresh", key="refresh_trending"):
+            st.session_state.pop("trending_universe_cache", None)
+            st.rerun()
+    with caption_col:
+        if active_universe:
+            st.caption(f"Live-discovered from CoinGecko trending + top volume: {', '.join(active_universe)}")
+        else:
+            st.warning("Trending discovery unavailable right now (CoinGecko unreachable) — falling back to High Liquidity.")
+            active_universe = UNIVERSE_PRESETS["High Liquidity"]
+elif st.session_state.universe_preset == "Custom":
     custom_default = _user.last_universe_custom or ",".join(_settings.universe.default)
     custom_universe_input = st.text_input(
         "Custom universe (comma-separated symbols)", value=custom_default, key="custom_universe_input",

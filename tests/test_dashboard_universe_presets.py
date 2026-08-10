@@ -39,7 +39,7 @@ def main():
         assert not at.exception
 
         selectboxes = {sb.label: sb for sb in at.selectbox}
-        universe_select = next((sb for sb in at.selectbox if set(sb.options) == set(list(UNIVERSE_PRESETS.keys()) + ["Custom"])), None)
+        universe_select = next((sb for sb in at.selectbox if set(sb.options) == set(["🔥 Trending Now"] + list(UNIVERSE_PRESETS.keys()) + ["Custom"])), None)
         assert universe_select is not None, f"Couldn't find the universe preset selectbox among: {[(sb.label, sb.options) for sb in at.selectbox]}"
         assert universe_select.value == "High Liquidity", f"Expected the sensible default, got {universe_select.value}"
         print("1. New user gets 'High Liquidity' as the default preset — useful results with zero typing: OK")
@@ -68,7 +68,7 @@ def main():
         at2.button[0].click().run(timeout=20)
         assert not at2.exception
 
-        universe_select2 = next((sb for sb in at2.selectbox if set(sb.options) == set(list(UNIVERSE_PRESETS.keys()) + ["Custom"])), None)
+        universe_select2 = next((sb for sb in at2.selectbox if set(sb.options) == set(["🔥 Trending Now"] + list(UNIVERSE_PRESETS.keys()) + ["Custom"])), None)
         assert universe_select2.value == "Majors", f"CRITICAL: a fresh session should remember 'Majors' from before, got {universe_select2.value}"
         print("4. CRITICAL: a completely fresh session (new login) correctly remembers 'Majors' from before — genuine cross-session persistence, not just in-memory state: OK")
 
