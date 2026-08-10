@@ -22,6 +22,7 @@ actually populated — that growth sub-signal had silently never worked.
 """
 
 from __future__ import annotations
+import asyncio
 from typing import Dict, Optional
 import httpx
 
@@ -51,6 +52,16 @@ class SocialDataSource:
         )
         self._breaker = breakers.get("lunarcrush", failure_threshold=failure_threshold, cooldown_seconds=cooldown_seconds)
         self._logged_missing_key = False
+        # Same fix as Hyperliquid's exchange.py semaphore, same reason:
+        # get_social_blob() fires one time-series request PER COIN, and
+        # scan_many runs many coins concurrently — without a cap, a full
+        # universe scan throws every coin's request at LunarCrush nearly
+        # simultaneously, well past what their rate limit tolerates,
+        # causing exactly the cascading-slowdown pattern already found
+        # and fixed for Hyperliquid. This was missed the first time
+        # because it only became observable once a real API key made
+        # these calls actually fire instead of short-circuiting on "no key."
+        self._request_semaphore = asyncio.Semaphore(4)
 
     async def close(self):
         await self._http.aclose()
@@ -92,7 +103,8 @@ class SocialDataSource:
         baselines and detect whether mention volume is accelerating."""
         async def fetch():
             try:
-                data = await self._breaker.call(lambda: self._get_time_series_raw(symbol))
+                async with self._request_semaphore:
+                    data = await self._breaker.call(lambda: self._get_time_series_raw(symbol))
             except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                 print(f"[social] LunarCrush time-series failed for {symbol}: {e}")
                 return None
@@ -138,7 +150,7 @@ class SocialDataSource:
             if sentiments:
                 sentiment_prev = sentiments[0]
 
-        return {
+        result = {
             "galaxy_score": current.get("galaxy_score"),
             "galaxy_score_previous": current.get("galaxy_score_previous"),
             "alt_rank": current.get("alt_rank"),
@@ -152,3 +164,6 @@ class SocialDataSource:
             "interactions_24h": current.get("interactions_24h") or current.get("interactions"),
             "interactions_baseline": baseline_interactions,
         }
+        print(f"[social] {symbol} social data fetched successfully: galaxy_score={result['galaxy_score']}, "
+              f"sentiment={result['sentiment']}, social_volume_24h={result['social_volume_24h']}")
+        return result
