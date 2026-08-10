@@ -17,12 +17,20 @@ asyncio.run() caused real problems there (see that file's docstring).
 
 from __future__ import annotations
 import asyncio
+import os
+import sys
+
+# Same fix as dashboard.py, same reason — see that file's comment for
+# the full explanation (a real ModuleNotFoundError discovered on live
+# Railway deployment, not theoretical).
 import json
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import pandas as pd
 import streamlit as st
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opportunity_scanner.settings import load_settings
 from opportunity_scanner.meme_scoring_engine import (

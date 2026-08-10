@@ -23,6 +23,19 @@ already-fetched FactorResults instantly, no network call at all.
 
 from __future__ import annotations
 import asyncio
+import os
+import sys
+
+# Defensive sys.path fix — discovered via a live deployment failure, not
+# theoretical. This exact script (streamlit run opportunity_scanner/
+# dashboard.py from the project root) worked correctly in local testing,
+# but failed with "ModuleNotFoundError: No module named 'opportunity_
+# scanner'" on Railway specifically — evidence that Streamlit's own
+# sys.path setup for a script at a relative subpath isn't consistent
+# across every hosting environment. Rather than depend on that behavior
+# (or on PYTHONPATH being set correctly by whatever's launching this),
+# explicitly ensure the project root — the parent of this file's own
+# directory — is on sys.path before any opportunity_scanner import runs.
 import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
@@ -30,6 +43,8 @@ from typing import Optional
 
 import pandas as pd
 import streamlit as st
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opportunity_scanner.settings import load_settings
 from opportunity_scanner.scanner import OpportunityScanner
