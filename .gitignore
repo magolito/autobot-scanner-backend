@@ -1,0 +1,43 @@
+# Databases — these are runtime state (scan history, users, subscriptions),
+# never source code. Committing one would also mean accidentally committing
+# real user emails/password hashes/subscription data if this ever ran locally
+# with real data before being gitignored.
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Secrets — .env.example is the template and IS committed; a real .env never should be
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Logs
+*.log

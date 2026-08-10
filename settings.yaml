@@ -1,0 +1,348 @@
+# AutoBot Opportunity Scanner — settings.yaml
+# ---------------------------------------------------------------------------
+# This is the ONE file to edit to change scoring weights, filters, timeframes,
+# regime behavior, alerts, and provider resilience — no code changes needed.
+# Secrets (API keys, bot tokens, webhook URLs) do NOT belong here — this file
+# is meant to be committed to version control. Put secrets in your
+# environment / .env file instead (see .env.example). Anywhere below with a
+# null default and a comment saying "env var" means: set it as an
+# environment variable, this file just documents that it exists.
+#
+# Env vars override this file. Nested settings use a double underscore,
+# e.g. WEIGHTS__STRENGTH=0.30 overrides weights.strength below.
+# ---------------------------------------------------------------------------
+
+# This dashboard's own public URL — needed to build the redirect URLs
+# Stripe/crypto checkout sends the person back to after paying.
+app_base_url: http://localhost:8501
+app_db_path: app_users.db
+
+# ---------------------------------------------------------------------------
+# Billing (Stage 3). secret_key/webhook_secret/api_key/ipn_secret are NOT
+# set here — set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+# NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET as environment variables
+# instead. price_id_pro/price_id_elite are safe to commit — they're just
+# identifiers for Products/Prices created in the Stripe Dashboard, not
+# secrets — but ARE required for the webhook handler to know which plan
+# a payment corresponds to.
+# ---------------------------------------------------------------------------
+stripe:
+  enabled: false
+  price_id_pro: null    # from the Stripe Dashboard, e.g. "price_1AbC..."
+  price_id_elite: null
+
+crypto_payments:
+  enabled: false
+  sandbox: false
+  price_usd_pro: 39.0
+  price_usd_elite: 89.0
+
+weights:
+  strength: 0.22
+  oi_dynamics: 0.28
+  momentum: 0.25
+  social: 0.25
+
+filters:
+  min_24h_volume_usd: 5000000
+  min_market_cap_usd: 10000000
+  min_exchange_listings: 1
+  max_bid_ask_spread_pct: 1.5
+  require_min_candles: 50
+
+timeframes:
+  list: ["15m", "1h", "4h", "1d"]
+  weights:
+    15m: 0.10
+    1h: 0.25
+    4h: 0.30
+    1d: 0.35
+  candles_per_timeframe: 250
+
+signal_bands:
+  strong_buy: 80.0
+  buy: 65.0
+  neutral: 45.0
+  caution: 25.0
+
+confidence_bands:
+  high: 75.0
+  medium: 50.0
+
+regime:
+  risk_on_threshold: 65.0
+  risk_off_threshold: 35.0
+  risk_off_dampener_points: 12.0
+  dampen_above_score: 50.0
+  volatility_lookback_days: 20
+  volatility_normalize_lo: 0.30
+  volatility_normalize_hi: 1.20
+
+exchange:
+  primary: bybit
+  quote_currency: USDT
+
+universe:
+  default: ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT"]
+  # blacklist always wins — a symbol here is never scanned, even if also whitelisted
+  blacklist: []
+  # if non-empty, ONLY these symbols are scanned (blacklist still applies on top)
+  whitelist: []
+
+scheduler:
+  interval_minutes: 15
+
+storage:
+  db_path: opportunity_scanner.db
+
+# ---------------------------------------------------------------------------
+# Alerts — who gets notified, on what, and how often. Notification SENDING
+# (the actual Telegram/Discord/email calls) is a Phase 5 product feature —
+# this section defines the config schema and trigger rules now so that
+# work has a settings surface to build against, rather than hardcoding
+# thresholds into the sender code later.
+# ---------------------------------------------------------------------------
+alerts:
+  enabled: false
+  triggers:
+    # Alert when a coin's signal newly crosses INTO any of these grades
+    # (i.e. it wasn't this grade last scan, and now it is)
+    on_signal_change_to: ["Strong Buy", "Buy"]
+    min_confidence: 60.0
+    # don't re-alert the same coin+signal combination within this window,
+    # even if it keeps re-qualifying every scan cycle
+    cooldown_minutes: 60
+    # ALSO alert on a large single-cycle score jump, even without a signal
+    # grade change (e.g. 55 -> 74 is still "Buy" band-adjacent-worthy news
+    # even if it doesn't cross a grade boundary)
+    score_jump_threshold: 15.0
+  telegram:
+    enabled: false
+    bot_token: null   # env var: TELEGRAM_BOT_TOKEN
+    chat_id: null      # env var: TELEGRAM_CHAT_ID
+  discord:
+    enabled: false
+    webhook_url: null   # env var: DISCORD_WEBHOOK_URL
+  email:
+    enabled: false
+    smtp_host: null
+    smtp_port: 587
+    from_address: null
+    to_addresses: []
+
+# ---------------------------------------------------------------------------
+# Provider resilience — cache freshness and circuit breaker behavior per
+# data source. These were hardcoded in the provider modules before; moving
+# them here means "Bybit OHLCV feels stale, shorten the cache" or "CoinGlass
+# keeps flapping, raise its failure threshold" are now config edits, not
+# code edits.
+# ---------------------------------------------------------------------------
+resilience:
+  cache_ttl_seconds:
+    ticker: 20
+    ohlcv_15m: 60
+    ohlcv_1h: 180
+    ohlcv_4h: 600
+    ohlcv_1d: 1800
+    open_interest: 300
+    derivatives_snapshot: 180
+    social: 300
+    whale: 120
+    dexscreener: 30
+  circuit_breakers:
+    bybit:
+      failure_threshold: 5
+      cooldown_seconds: 60
+    hyperliquid:
+      failure_threshold: 5
+      cooldown_seconds: 60
+    coinglass:
+      failure_threshold: 4
+      cooldown_seconds: 120
+    lunarcrush:
+      failure_threshold: 4
+      cooldown_seconds: 120
+    whale_alert:
+      failure_threshold: 4
+      cooldown_seconds: 120
+    dexscreener:
+      failure_threshold: 5
+      cooldown_seconds: 60
+
+# ---------------------------------------------------------------------------
+# Degen Radar — on-chain/memecoin token discovery via DexScreener (free, no
+# key). Deliberately separate from the main scanner: kept off by default,
+# and its output is never blended into the four-pillar Opportunity Score —
+# see degen_radar.py for the full reasoning.
+# ---------------------------------------------------------------------------
+degen_radar:
+  enabled: true
+  chain_id: solana
+  min_liquidity_usd_to_show: 5000
+
+# ---------------------------------------------------------------------------
+# Meme Coin Scanner — genuinely different philosophy from the main scanner
+# and Degen Radar above: safety-gated (a coin either passes or gets no
+# score at all), hype-weighted, mode-aware. See MEME_ARCHITECTURE.md for
+# the full design. Off by default, same reasoning as degen_radar: real
+# demand for it is a product decision, not a default.
+# ---------------------------------------------------------------------------
+meme_scanner:
+  enabled: false
+  mode: early_momentum   # "sniper" | "early_momentum" | "confirmed_runner"
+  chain_id: solana        # Solana first, per the brief — Base/Ethereum later
+  min_opportunity_score_to_show: 60.0   # the "only high-quality candidates" filter
+  show_caution_grade: true                # include Safety=Caution results, not just clean Pass
+  db_path: meme_scanner.db
+
+  # "Only high-conviction + safety passed + rising hype" — all three
+  # required independently, not a blended score. min_opportunity_score
+  # here is deliberately stricter than min_opportunity_score_to_show
+  # above: everything that clears the display filter gets SHOWN, only
+  # the pickiest subset gets an actual push notification.
+  alerts:
+    enabled: false
+    min_opportunity_score: 80.0
+    require_pass_grade_only: false   # true = Caution-tier never alerts, even if not Fail
+    cooldown_minutes: 120
+
+  discovery:
+    use_dexscreener_boosts: true    # pull DexScreener's real-time boosted/trending feed
+    watchlist: []                     # specific token addresses to always check
+    max_candidates_per_scan: 30        # cap — every candidate costs a RugCheck + GoPlus call
+
+  resilience:
+    rugcheck_cache_ttl_seconds: 120
+    goplus_cache_ttl_seconds: 120
+    dexscreener_cache_ttl_seconds: 30
+    rugcheck_breaker:
+      failure_threshold: 4
+      cooldown_seconds: 120
+    goplus_breaker:
+      failure_threshold: 4
+      cooldown_seconds: 120
+    dexscreener_breaker:
+      failure_threshold: 5
+      cooldown_seconds: 60
+
+  # -------------------------------------------------------------------------
+  # The actual adjustable knobs. One full threshold set + one weight set per
+  # mode — edit these directly to change scanner behavior, no code changes
+  # needed. These three presets are the recommended starting points from
+  # MEME_ARCHITECTURE.md; treat them as a baseline to tune, not gospel.
+  # -------------------------------------------------------------------------
+  thresholds:
+    sniper:                          # 0-20min: highest risk tolerance on AGE, strictest on SAFETY
+      min_liquidity_usd: 15000
+      max_tax_pct: 10
+      min_lp_locked_pct: 70
+      max_top10_pct: 30
+      max_dev_pct: 8
+      min_holders: 50
+      max_rugcheck_score: 40
+      age_min_minutes: 0
+      age_max_minutes: 20
+    early_momentum:                  # 20min-3h: the recommended default
+      min_liquidity_usd: 20000
+      max_tax_pct: 10
+      min_lp_locked_pct: 80
+      max_top10_pct: 28
+      max_dev_pct: 6
+      min_holders: 100
+      max_rugcheck_score: 35
+      age_min_minutes: 20
+      age_max_minutes: 180
+    confirmed_runner:                # 3-24h: safer, smaller edge
+      min_liquidity_usd: 25000
+      max_tax_pct: 8
+      min_lp_locked_pct: 90
+      max_top10_pct: 25
+      max_dev_pct: 5
+      min_holders: 150
+      max_rugcheck_score: 30
+      age_min_minutes: 180
+      age_max_minutes: 1440
+
+  # Pillar weights per mode. Hype is deliberately the strongest signal in
+  # ALL three modes (see MEME_ARCHITECTURE.md §6 revision note) — the gap
+  # to on-chain narrows with age, but hype never stops leading.
+  weights:
+    sniper:
+      hype: 0.45
+      onchain: 0.25
+      momentum: 0.30
+    early_momentum:
+      hype: 0.40
+      onchain: 0.32
+      momentum: 0.28
+    confirmed_runner:
+      hype: 0.38
+      onchain: 0.34
+      momentum: 0.28
+
+  # Caution zone margins — how much stricter than the hard reject ceiling
+  # a coin needs to clear for a clean "Pass" vs a flagged "Caution".
+  # Shared across modes (a relative multiplier, not a raw threshold).
+  caution_margin:
+    liquidity_multiplier: 1.5        # must be >= 1.5x the hard minimum for a clean Pass
+    top10_holder_fraction: 0.85       # must be <= 85% of the hard-reject ceiling
+    dev_wallet_fraction: 0.75
+    rugcheck_score_fraction: 0.7
+
+  # Internal formula constants for the Hype pillar specifically — exposed
+  # here since Hype is the highest-leverage thing to tune (up to 45% of
+  # the final score).
+  hype_formula:
+    velocity_normalize_lo: 1.0
+    velocity_normalize_hi: 5.0
+    acceleration_normalize_lo: 0.5
+    acceleration_normalize_hi: 3.0
+    boost_normalize_hi: 500.0
+    kol_boost_cap: 15.0
+    velocity_weight: 0.35
+    acceleration_weight: 0.30
+    trending_weight: 0.20
+    social_presence_weight: 0.15
+
+# ---------------------------------------------------------------------------
+# Dashboard login gate. Set `enabled: false` to disable auth entirely
+# (fine for local development, NOT recommended once deployed anywhere
+# reachable — the dashboard's "Scan Now" triggers real, sometimes paid,
+# API calls). The password itself is NOT set here — leave it null and
+# set the DASHBOARD_PASSWORD environment variable instead. This file is
+# meant to be committed to version control; a real password should
+# never end up in it.
+# ---------------------------------------------------------------------------
+auth:
+  enabled: true
+  password: null   # env var: DASHBOARD_PASSWORD — never commit a real value here
+
+# ---------------------------------------------------------------------------
+# Provider toggles — turn a paid provider off without removing its API key,
+# useful for testing the free-tier fallback path deliberately.
+# ---------------------------------------------------------------------------
+providers:
+  lunarcrush_enabled: true
+  coinglass_enabled: true
+  whale_alert_enabled: true
+
+logging:
+  level: INFO          # DEBUG | INFO | WARNING | ERROR
+  format: text          # text | json
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+
+cache:
+  # leave redis_url unset (null) to use in-memory caching; set REDIS_URL
+  # env var to share cache state across multiple process instances
+  redis_url: null
+
+sector_map:
+  l1: ["BTC", "ETH", "SOL", "AVAX", "NEAR", "SUI", "APT", "ADA"]
+  l2: ["ARB", "OP", "MATIC", "STRK", "ZK"]
+  defi: ["UNI", "AAVE", "LINK", "MKR", "CRV", "LDO"]
+  ai: ["TAO", "FET", "RNDR", "AGIX", "WLD"]
+  memecoin: ["DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI"]

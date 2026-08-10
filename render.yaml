@@ -1,0 +1,66 @@
+# Single service, runs the API + BOTH Streamlit dashboards (via start.sh)
+# so they share this container's local SQLite files — see DEPLOYMENT.md's
+# "Deployment topology" section for why splitting them into separate
+# Render services would silently break (Render doesn't share disks
+# between services by default).
+#
+# IMPORTANT Render-specific limitation: unlike Railway, Render's standard
+# web service only routes external traffic to ONE port. That means only
+# the API (port 8000) gets a public URL through this config — both
+# dashboards (8501, 8502) run inside the same container but aren't
+# reachable from outside Render's network this way. Two options:
+#   A) Fine as-is if the dashboards are genuinely just for internal use —
+#      reach them via Render's Shell feature / SSH port-forwarding, which
+#      is arguably the more appropriate access model for internal tools.
+#   B) Use Railway instead if you want the API and both dashboards
+#      publicly reachable at separate URLs from one deployment — Railway
+#      supports adding multiple public domains, each pointed at a
+#      different port on the same service (see railway.json).
+#
+# DASHBOARD_PASSWORD is legacy — both dashboards now use real per-user
+# accounts (Stage 2), not a shared password. Left out of the required
+# list below; the AuthSettings code path it feeds still exists but isn't
+# used by either dashboard's current login flow.
+services:
+  - type: web
+    name: opportunity-scanner
+    env: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: LUNARCRUSH_API_KEY
+        sync: false
+      - key: WHALE_ALERT_API_KEY
+        sync: false
+      - key: COINGLASS_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      # Billing (Stage 3) — only needed if stripe.enabled / crypto_payments.enabled in settings.yaml
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: NOWPAYMENTS_API_KEY
+        sync: false
+      - key: NOWPAYMENTS_IPN_SECRET
+        sync: false
+      # Persistent storage — all three databases live on the same mounted
+      # disk, so they survive restarts/redeploys
+      - key: SCANNER_DB_PATH
+        value: /data/opportunity_scanner.db
+      - key: MEME_SCANNER__DB_PATH
+        value: /data/meme_scanner.db
+      - key: APP_DB_PATH
+        value: /data/app_users.db
+      - key: APP_BASE_URL
+        value: https://your-service-name.onrender.com
+      - key: RUN_SCHEDULER_IN_PROCESS
+        value: "true"
+    disk:
+      name: scanner-data
+      mountPath: /data
+      sizeGB: 1
