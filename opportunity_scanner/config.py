@@ -147,6 +147,48 @@ class RegimeConfig:
 
 
 @dataclass
+class BucketThresholds:
+    """One bucket's admission criteria — a result must meet ALL of these
+    to qualify. Buckets are evaluated most-selective-first (Super Strong,
+    then Strong, then Building), so a result lands in the first bucket
+    it qualifies for; anything meeting none of them falls to High Risk /
+    Low Conviction, the catch-all."""
+    min_score: float
+    min_confidence: float
+    allowed_risk_tiers: List[str]
+    min_data_completeness: float   # fraction of pillars with available=True, 0.0-1.0
+
+
+@dataclass
+class SmartViewConfig:
+    """
+    Bucket thresholds for the dashboard's Smart View. Deliberately
+    aligned with the existing SignalBands/ConfidenceBands defaults
+    (strong_buy=80, buy=65, neutral=45; confidence high=75, medium=50)
+    rather than inventing a disconnected second grading system — Smart
+    View is a presentation grouping on top of the same underlying
+    scores, not a competing scoring model.
+
+    Super Strong is deliberately narrow: high score AND high confidence
+    AND acceptable risk tier AND good data completeness, all four
+    required — a coin can't buy its way into Super Strong with a great
+    score alone if the underlying data was thin or the risk tier is
+    high_risk. This is what "very selective" means concretely.
+    """
+    enabled: bool = True
+    super_strong: BucketThresholds = field(default_factory=lambda: BucketThresholds(
+        min_score=80.0, min_confidence=75.0, allowed_risk_tiers=["core", "small_cap"], min_data_completeness=0.75,
+    ))
+    strong: BucketThresholds = field(default_factory=lambda: BucketThresholds(
+        min_score=65.0, min_confidence=50.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.5,
+    ))
+    building: BucketThresholds = field(default_factory=lambda: BucketThresholds(
+        min_score=45.0, min_confidence=0.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.0,
+    ))
+    # Anything not meeting even "building"'s thresholds -> High Risk / Low Conviction (no config needed, it's the catch-all)
+
+
+@dataclass
 class ScannerConfig:
     weights: Weights = field(default_factory=Weights)
     filters: QualityFilters = field(default_factory=QualityFilters)
@@ -155,6 +197,7 @@ class ScannerConfig:
     confidence_bands: ConfidenceBands = field(default_factory=ConfidenceBands)
     regime_config: RegimeConfig = field(default_factory=RegimeConfig)
     sector_map: Dict[str, List[str]] = field(default_factory=lambda: dict(DEFAULT_SECTOR_MAP))
+    smart_view: SmartViewConfig = field(default_factory=SmartViewConfig)
 
     # Exchange to use for OHLCV / OI / funding / long-short ratio (ccxt id)
     primary_exchange: str = "bybit"

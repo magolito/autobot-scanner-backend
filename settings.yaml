@@ -78,6 +78,30 @@ regime:
   volatility_normalize_lo: 0.30
   volatility_normalize_hi: 1.20
 
+# Dashboard "Smart View" — buckets scan results into four priority groups
+# instead of one flat table. Super Strong is deliberately narrow: a coin
+# needs a high score AND high confidence AND an acceptable risk tier AND
+# good data completeness, all four, to land there — a great score alone
+# from a high_risk-tier coin or a coin with thin data falls to a lower
+# bucket instead. See smart_view.py for the classification logic.
+smart_view:
+  enabled: true
+  super_strong:
+    min_score: 80.0
+    min_confidence: 75.0
+    allowed_risk_tiers: ["core", "small_cap"]
+    min_data_completeness: 0.75
+  strong:
+    min_score: 65.0
+    min_confidence: 50.0
+    allowed_risk_tiers: ["core", "small_cap", "high_risk"]
+    min_data_completeness: 0.5
+  building:
+    min_score: 45.0
+    min_confidence: 0.0
+    allowed_risk_tiers: ["core", "small_cap", "high_risk"]
+    min_data_completeness: 0.0
+
 exchange:
   primary: bybit   # legacy — only used as the "bybit" slot in market_data_priority below; not the sole source anymore
   quote_currency: USDT

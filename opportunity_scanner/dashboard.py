@@ -52,6 +52,7 @@ from opportunity_scanner.scoring import combine_factors
 from opportunity_scanner.config import Weights
 from opportunity_scanner.storage import ScanStorage
 from opportunity_scanner.models import ScanResult, FactorResult
+from opportunity_scanner.smart_view import Bucket, bucket_results, BUCKET_LABELS, data_completeness
 
 # ----------------------------------------------------------------- page setup
 
@@ -539,46 +540,95 @@ display_results = [
     if r.composite_score >= min_score_filter and r.risk_tier in risk_filter
 ]
 
+
+def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
+    rows = []
+    for i, r in enumerate(results, 1):
+        f = r.factors
+        rows.append({
+            "Rank": i, "Symbol": r.base, "Score": r.composite_score, "Signal": r.signal,
+            "Confidence": r.confidence, "Strength": f["strength"].score if f["strength"].available else None,
+            "OI": f["oi_dynamics"].score if f["oi_dynamics"].available else None,
+            "Momentum": f["momentum"].score if f["momentum"].available else None,
+            "Social": f["social"].score if f["social"].available else None,
+            "Price": r.price, "Risk": r.risk_tier,
+        })
+    return pd.DataFrame(rows)
+
+
+def _render_result_table(results: list[ScanResult], widget_key: str):
+    df = _build_rows(results)
+    event = st.dataframe(
+        df, width='stretch', hide_index=True, height=min(560, 60 + 36 * len(results)),
+        on_select="rerun", selection_mode="single-row", key=widget_key,
+        column_config={
+            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
+            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f"),
+            "Strength": st.column_config.NumberColumn(format="%.0f"),
+            "OI": st.column_config.NumberColumn(format="%.0f"),
+            "Momentum": st.column_config.NumberColumn(format="%.0f"),
+            "Social": st.column_config.NumberColumn(format="%.0f"),
+            "Price": st.column_config.NumberColumn(format="$%.4f"),
+        },
+    )
+    selected_rows = event.selection.rows if event and event.selection else []
+    if selected_rows:
+        selected_symbol = df.iloc[selected_rows[0]]["Symbol"]
+        selected_result = next((r for r in results if r.base == selected_symbol), None)
+        if selected_result:
+            st.session_state.detail_result = selected_result
+
+
 with left:
     st.markdown('<div class="section-h">Top Opportunities</div>', unsafe_allow_html=True)
     if not st.session_state.results:
         st.info("No scans yet — click **Scan Now** to run your first scan.")
     elif not display_results:
         st.info("No results match your current filters — try widening the score or risk-tier filters.")
+    elif not _settings.smart_view.enabled:
+        # Smart View disabled in settings — original flat-table behavior, unchanged
+        _render_result_table(display_results, widget_key="flat_table")
     else:
-        rows = []
-        for i, r in enumerate(display_results, 1):
-            f = r.factors
-            rows.append({
-                "Rank": i, "Symbol": r.base, "Score": r.composite_score, "Signal": r.signal,
-                "Confidence": r.confidence, "Strength": f["strength"].score if f["strength"].available else None,
-                "OI": f["oi_dynamics"].score if f["oi_dynamics"].available else None,
-                "Momentum": f["momentum"].score if f["momentum"].available else None,
-                "Social": f["social"].score if f["social"].available else None,
-                "Price": r.price, "Risk": r.risk_tier,
-            })
-        df = pd.DataFrame(rows)
+        smart_config = _settings.to_scanner_config().smart_view
+        buckets = bucket_results(display_results, smart_config)
 
-        event = st.dataframe(
-            df, width='stretch', hide_index=True, height=560,
-            on_select="rerun", selection_mode="single-row",
-            column_config={
-                "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f"),
-                "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f"),
-                "Strength": st.column_config.NumberColumn(format="%.0f"),
-                "OI": st.column_config.NumberColumn(format="%.0f"),
-                "Momentum": st.column_config.NumberColumn(format="%.0f"),
-                "Social": st.column_config.NumberColumn(format="%.0f"),
-                "Price": st.column_config.NumberColumn(format="$%.4f"),
-            },
-        )
+        # Super Strong and Strong are the prominent, always-open sections —
+        # this is what "make Super Strong and Strong most prominent" means
+        # concretely: they render first, always expanded, with a visible
+        # count even when empty (empty Super Strong is the EXPECTED normal
+        # case most scans, not an error — "very selective" means usually zero).
+        super_strong = buckets[Bucket.SUPER_STRONG]
+        st.markdown(f'<div class="mono-label" style="margin-top:8px">{BUCKET_LABELS[Bucket.SUPER_STRONG]} ({len(super_strong)})</div>', unsafe_allow_html=True)
+        if super_strong:
+            _render_result_table(super_strong, widget_key="bucket_super_strong")
+        else:
+            st.caption("No Super Strong setups this scan — this bucket is intentionally selective, an empty result here is normal, not an error.")
 
-        selected_rows = event.selection.rows if event and event.selection else []
-        if selected_rows:
-            selected_symbol = df.iloc[selected_rows[0]]["Symbol"]
-            selected_result = next((r for r in display_results if r.base == selected_symbol), None)
-            if selected_result:
-                st.session_state.detail_result = selected_result
+        strong = buckets[Bucket.STRONG]
+        st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
+        if strong:
+            _render_result_table(strong, widget_key="bucket_strong")
+        else:
+            st.caption("No results in this bucket right now.")
+
+        building = buckets[Bucket.BUILDING]
+        if building:
+            st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
+            _render_result_table(building, widget_key="bucket_building")
+
+        # High Risk / Low Conviction — deliberately less prominent, collapsed
+        # by default, matching "should be less prominent or collapsed"
+        high_risk = buckets[Bucket.HIGH_RISK_LOW_CONVICTION]
+        if high_risk:
+            with st.expander(f"{BUCKET_LABELS[Bucket.HIGH_RISK_LOW_CONVICTION]} ({len(high_risk)}) — click to expand", expanded=False):
+                _render_result_table(high_risk, widget_key="bucket_high_risk")
+
+        # Full detailed table always stays available, per the explicit
+        # "keep the ability to see the full detailed table if needed"
+        # requirement — collapsed by default so it doesn't compete with
+        # the bucketed view above, but never removed.
+        with st.expander(f"View full ranked table ({len(display_results)} results, ungrouped)", expanded=False):
+            _render_result_table(display_results, widget_key="full_flat_table")
 
 # ----------------------------------------------------------------- detail modal
 

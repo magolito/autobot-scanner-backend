@@ -24,7 +24,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict, YamlConfigSettin
 
 from .config import (
     ScannerConfig, Weights, QualityFilters, TimeframeConfig,
-    SignalBands, ConfidenceBands, RegimeConfig,
+    SignalBands, ConfidenceBands, RegimeConfig, SmartViewConfig, BucketThresholds,
 )
 
 CONFIG_YAML_PATH = Path(__file__).resolve().parent.parent / "settings.yaml"
@@ -78,6 +78,28 @@ class RegimeSettings(BaseModel):
     volatility_lookback_days: int = 20
     volatility_normalize_lo: float = 0.30
     volatility_normalize_hi: float = 1.20
+
+
+class BucketThresholdSettings(BaseModel):
+    min_score: float
+    min_confidence: float
+    allowed_risk_tiers: List[str]
+    min_data_completeness: float
+
+
+class SmartViewSettings(BaseModel):
+    """Dashboard Smart View bucket thresholds — see smart_view.py for
+    the classification logic these feed into."""
+    enabled: bool = True
+    super_strong: BucketThresholdSettings = BucketThresholdSettings(
+        min_score=80.0, min_confidence=75.0, allowed_risk_tiers=["core", "small_cap"], min_data_completeness=0.75,
+    )
+    strong: BucketThresholdSettings = BucketThresholdSettings(
+        min_score=65.0, min_confidence=50.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.5,
+    )
+    building: BucketThresholdSettings = BucketThresholdSettings(
+        min_score=45.0, min_confidence=0.0, allowed_risk_tiers=["core", "small_cap", "high_risk"], min_data_completeness=0.0,
+    )
 
 
 class ExchangeSettings(BaseModel):
@@ -435,6 +457,7 @@ class Settings(BaseSettings):
     signal_bands: SignalBandsSettings = SignalBandsSettings()
     confidence_bands: ConfidenceBandsSettings = ConfidenceBandsSettings()
     regime: RegimeSettings = RegimeSettings()
+    smart_view: SmartViewSettings = SmartViewSettings()
     exchange: ExchangeSettings = ExchangeSettings()
     universe: UniverseSettings = UniverseSettings()
     scheduler: SchedulerSettings = SchedulerSettings()
@@ -642,6 +665,12 @@ class Settings(BaseSettings):
             quote_currency=self.exchange.quote_currency,
             market_data_priority=list(self.exchange.market_data_priority),
             lunarcrush_api_key=self.lunarcrush_api_key,
+            smart_view=SmartViewConfig(
+                enabled=self.smart_view.enabled,
+                super_strong=BucketThresholds(**self.smart_view.super_strong.model_dump()),
+                strong=BucketThresholds(**self.smart_view.strong.model_dump()),
+                building=BucketThresholds(**self.smart_view.building.model_dump()),
+            ),
         )
 
 
