@@ -60,7 +60,21 @@ class CircuitBreaker:
             return CircuitState.HALF_OPEN
         return self._state
 
-    async def call(self, fn: Callable[[], Awaitable[T]]) -> T:
+    async def call(self, fn: Callable[[], Awaitable[T]], ignore_exceptions: tuple = ()) -> T:
+        """
+        ignore_exceptions: exception types that still propagate to the
+        caller as normal, but do NOT count toward tripping the breaker.
+        For a symbol simply not being listed on a given exchange (ccxt's
+        BadSymbol, for example) — that's an expected, routine condition
+        for any curated exchange (not every exchange lists every asset),
+        and says nothing about whether the exchange itself is healthy.
+        Treating it as a failure was a real, confirmed bug: discovering
+        even 3 coins in a row that happen not to be listed on Hyperliquid
+        was enough to trip the breaker for its full cooldown, taking
+        down OHLCV for every OTHER coin in that window — including
+        genuinely major, well-listed coins that had nothing to do with
+        the missing-symbol coins that tripped it.
+        """
         current = self.state
 
         if current == CircuitState.OPEN:
@@ -71,6 +85,8 @@ class CircuitBreaker:
 
         try:
             result = await fn()
+        except ignore_exceptions:
+            raise
         except Exception:
             await self._record_failure()
             raise

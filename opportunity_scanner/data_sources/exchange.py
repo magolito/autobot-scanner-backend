@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import httpx
 import ccxt.async_support as ccxt_async
+import ccxt
 
 from ..config import ScannerConfig
 from ..models import MarketSnapshot
@@ -105,7 +106,7 @@ class ExchangeDataSource:
         try:
             if source == "hyperliquid":
                 async with self._hyperliquid_semaphore:
-                    raw = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ohlcv(f"{base}/USDC:USDC", timeframe=timeframe, limit=limit))
+                    raw = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ohlcv(f"{base}/USDC:USDC", timeframe=timeframe, limit=limit), ignore_exceptions=(ccxt.BadSymbol,))
             elif source == "bybit":
                 raw = await self._bybit_breaker.call(lambda: self.exchange.fetch_ohlcv(f"{base}/USDT", timeframe=timeframe, limit=limit))
             else:
@@ -167,7 +168,7 @@ class ExchangeDataSource:
         try:
             if source == "hyperliquid":
                 async with self._hyperliquid_semaphore:
-                    t = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ticker(f"{base}/USDC:USDC"))
+                    t = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ticker(f"{base}/USDC:USDC"), ignore_exceptions=(ccxt.BadSymbol,))
                 spread_pct = None
                 if t.get("bid") and t.get("ask") and t["bid"] > 0:
                     spread_pct = (t["ask"] - t["bid"]) / t["bid"] * 100
@@ -246,7 +247,7 @@ class ExchangeDataSource:
             if source == "hyperliquid":
                 try:
                     async with self._hyperliquid_semaphore:
-                        oi = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_open_interest(f"{base}/USDC:USDC"))
+                        oi = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_open_interest(f"{base}/USDC:USDC"), ignore_exceptions=(ccxt.BadSymbol,))
                     current = oi.get("openInterestValue") if oi else None
                 except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                     print(f"[exchange:hyperliquid] OI fetch failed for {base}: {e}")
@@ -294,7 +295,7 @@ class ExchangeDataSource:
             if source == "hyperliquid":
                 try:
                     async with self._hyperliquid_semaphore:
-                        fr = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_funding_rate(f"{base}/USDC:USDC"))
+                        fr = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_funding_rate(f"{base}/USDC:USDC"), ignore_exceptions=(ccxt.BadSymbol,))
                     rate = fr.get("fundingRate") if fr else None
                 except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                     print(f"[exchange:hyperliquid] funding rate fetch failed for {base}: {e}")
