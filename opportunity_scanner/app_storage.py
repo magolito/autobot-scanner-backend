@@ -60,6 +60,8 @@ class User(BaseModel):
     subscription_status: str
     created_at: str
     updated_at: str
+    last_universe_preset: str = "high_liquidity"
+    last_universe_custom: Optional[str] = None
 
 
 class AppStorage:
@@ -72,8 +74,28 @@ class AppStorage:
         try:
             conn.executescript(SCHEMA)
             conn.commit()
+            self._migrate_add_column(conn, "users", "last_universe_preset", "TEXT DEFAULT 'high_liquidity'")
+            self._migrate_add_column(conn, "users", "last_universe_custom", "TEXT")
+            conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, column_def: str):
+        """
+        Safe, idempotent column addition — CREATE TABLE IF NOT EXISTS in
+        SCHEMA only creates the table on a truly fresh database; it does
+        NOT retroactively add new columns to a table that already exists
+        from an earlier deploy. This matters concretely here: there's a
+        live Railway deployment with real registered user accounts
+        already in this exact database file — a naive schema change
+        would silently fail to reach it. Checks PRAGMA table_info first
+        so this is safe to call on every startup, on both a fresh
+        database and an already-populated one.
+        """
+        existing_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -86,6 +108,8 @@ class AppStorage:
             id=row["id"], email=row["email"], plan=PlanTier(row["plan"]),
             stripe_customer_id=row["stripe_customer_id"], subscription_status=row["subscription_status"],
             created_at=row["created_at"], updated_at=row["updated_at"],
+            last_universe_preset=row["last_universe_preset"] or "high_liquidity",
+            last_universe_custom=row["last_universe_custom"],
         )
 
     # -------------------------------------------------------------- create
@@ -248,5 +272,22 @@ class AppStorage:
                 (user_id, scanner, today),
             ).fetchone()
             return row["count"]
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------- universe preference
+
+    def save_universe_preference(self, user_id: int, preset: str, custom_symbols: Optional[str] = None) -> bool:
+        """Persisted per-user (not just session state), so it survives a
+        logout/login or a fresh browser — the actual "remember the user's
+        last selected universe" requirement, not just a same-session default."""
+        conn = self._connect()
+        try:
+            result = conn.execute(
+                "UPDATE users SET last_universe_preset = ?, last_universe_custom = ?, updated_at = ? WHERE id = ?",
+                (preset, custom_symbols, datetime.now(timezone.utc).isoformat(), user_id),
+            )
+            conn.commit()
+            return result.rowcount > 0
         finally:
             conn.close()

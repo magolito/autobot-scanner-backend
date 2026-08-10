@@ -120,6 +120,30 @@ class ConfidenceBands:
 # Expand this as your coverage grows — anything not listed here is
 # treated as its own single-coin "sector" (relative-strength-vs-sector
 # gracefully falls back to relative-strength-vs-BTC only in that case).
+# Coin universe presets for the dashboard's "Majors / High Liquidity /
+# Full Universe / Custom" selector. Deliberately bounded even at the
+# widest tier — "Full Universe" here is ~30 curated liquid coins, not a
+# literal "scan everything," per the explicit performance requirement.
+# This is a living list, not a permanent one — worth refreshing
+# periodically as market cap rankings and liquidity shift; also editable
+# via settings.yaml without touching code (see Settings.exchange or the
+# dedicated universe_presets section).
+UNIVERSE_PRESETS: Dict[str, List[str]] = {
+    "Majors": ["BTC", "ETH", "SOL", "BNB", "XRP"],
+    "High Liquidity": [
+        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
+        "TRX", "LTC", "ATOM", "NEAR", "APT", "SUI",
+    ],
+    "Full Universe": [
+        "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
+        "TRX", "LTC", "ATOM", "NEAR", "APT", "SUI",
+        "ARB", "OP", "INJ", "TIA", "SEI", "RENDER", "ICP", "FIL", "UNI", "AAVE",
+        "MKR", "PEPE", "WIF", "BONK", "SHIB",
+    ],
+}
+DEFAULT_UNIVERSE_PRESET = "High Liquidity"   # a new user's first-ever scan, before any preference is saved
+
+
 DEFAULT_SECTOR_MAP: Dict[str, List[str]] = {
     "l1": ["BTC", "ETH", "SOL", "AVAX", "NEAR", "SUI", "APT", "ADA"],
     "l2": ["ARB", "OP", "MATIC", "STRK", "ZK"],

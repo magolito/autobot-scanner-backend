@@ -50,6 +50,7 @@ from opportunity_scanner.settings import load_settings
 from opportunity_scanner.scanner import OpportunityScanner
 from opportunity_scanner.scoring import combine_factors
 from opportunity_scanner.config import Weights
+from opportunity_scanner.config import UNIVERSE_PRESETS, DEFAULT_UNIVERSE_PRESET
 from opportunity_scanner.storage import ScanStorage
 from opportunity_scanner.models import ScanResult, FactorResult
 from opportunity_scanner.smart_view import Bucket, bucket_results, BUCKET_LABELS, data_completeness
@@ -415,6 +416,17 @@ if "hydrated" not in st.session_state:
 
 # ----------------------------------------------------------------- top bar
 
+def _preset_slug(display_name: str) -> str:
+    return display_name.lower().replace(" ", "_")
+
+
+def _preset_from_slug(slug: str) -> str:
+    for display_name in list(UNIVERSE_PRESETS.keys()) + ["Custom"]:
+        if _preset_slug(display_name) == slug:
+            return display_name
+    return DEFAULT_UNIVERSE_PRESET
+
+
 top_l, top_r = st.columns([3, 2])
 with top_l:
     last_scan_str = st.session_state.last_scan_time.strftime("%H:%M:%S UTC") if st.session_state.last_scan_time else "never"
@@ -435,29 +447,53 @@ with top_r:
         mode = st.selectbox("Mode", ["Scalp", "Swing"], index=["Scalp", "Swing"].index(st.session_state.mode), label_visibility="collapsed")
         st.session_state.mode = mode
     with c2:
-        symbols_input = st.text_input("Universe", value=",".join(_settings.universe.default), label_visibility="collapsed")
+        preset_names = list(UNIVERSE_PRESETS.keys()) + ["Custom"]
+        if "universe_preset" not in st.session_state:
+            st.session_state.universe_preset = _preset_from_slug(_user.last_universe_preset)
+        selected_preset = st.selectbox(
+            "Universe", preset_names, index=preset_names.index(st.session_state.universe_preset),
+            label_visibility="collapsed", key="universe_preset_select",
+        )
+        if selected_preset != st.session_state.universe_preset:
+            st.session_state.universe_preset = selected_preset
+            _app_storage.save_universe_preference(
+                _user.id, _preset_slug(selected_preset),
+                _user.last_universe_custom if selected_preset == "Custom" else None,
+            )
     with c3:
         scan_clicked = st.button("⟳ Scan Now", width='stretch', disabled=not _access.allowed)
-        if scan_clicked:
-            # Re-verify right at the point of action rather than trusting the
-            # disabled= attribute computed a moment earlier — the disabled
-            # button is a UX nicety, this recheck is the actual enforcement.
-            _recheck = check_scanner_access(_user, "opportunity", _app_storage)
-            if not _recheck.allowed:
-                st.error(_recheck.reason)
-            else:
-                universe = [s.strip().upper() for s in symbols_input.split(",") if s.strip()]
-                with st.spinner("Scanning…"):
-                    try:
-                        results = run_scan(_settings, st.session_state.mode, universe)
-                        if _recheck.max_results_shown is not None:
-                            results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
-                        st.session_state.results = results
-                        st.session_state.last_scan_time = datetime.now(timezone.utc)
-                        _storage.save_scan_results_sync(results)
-                        record_scan(_user, "opportunity", _app_storage)
-                    except Exception as e:  # noqa: BLE001
-                        st.error(f"Scan failed: {e}")
+
+if st.session_state.universe_preset == "Custom":
+    custom_default = _user.last_universe_custom or ",".join(_settings.universe.default)
+    custom_universe_input = st.text_input(
+        "Custom universe (comma-separated symbols)", value=custom_default, key="custom_universe_input",
+    )
+    if custom_universe_input != (_user.last_universe_custom or ""):
+        _app_storage.save_universe_preference(_user.id, "custom", custom_universe_input)
+    active_universe = [s.strip().upper() for s in custom_universe_input.split(",") if s.strip()]
+else:
+    active_universe = UNIVERSE_PRESETS[st.session_state.universe_preset]
+    st.caption(f"{st.session_state.universe_preset}: {', '.join(active_universe)}")
+
+if scan_clicked:
+    # Re-verify right at the point of action rather than trusting the
+    # disabled= attribute computed a moment earlier — the disabled
+    # button is a UX nicety, this recheck is the actual enforcement.
+    _recheck = check_scanner_access(_user, "opportunity", _app_storage)
+    if not _recheck.allowed:
+        st.error(_recheck.reason)
+    else:
+        with st.spinner("Scanning…"):
+            try:
+                results = run_scan(_settings, st.session_state.mode, active_universe)
+                if _recheck.max_results_shown is not None:
+                    results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
+                st.session_state.results = results
+                st.session_state.last_scan_time = datetime.now(timezone.utc)
+                _storage.save_scan_results_sync(results)
+                record_scan(_user, "opportunity", _app_storage)
+            except Exception as e:  # noqa: BLE001
+                st.error(f"Scan failed: {e}")
 
 remaining_display = "unlimited" if _access.scans_remaining_today is None else str(_access.scans_remaining_today)
 if not _access.allowed:
