@@ -25,23 +25,18 @@ def main():
         if os.path.exists(p):
             os.remove(p)
 
-    original_discover = CoinGeckoDiscoveryProvider.discover_universe
-    original_overview = CoinGeckoDiscoveryProvider.get_market_overview
+    original_discover = CoinGeckoDiscoveryProvider.discover_universe_with_overview
 
     try:
-        async def fake_discover(self, max_size=25, top_volume_count=20):
-            return ["SOL", "HYPE"]
-
-        async def fake_overview(self, top_n=250):
-            return {
+        async def fake_discover(self, max_size=25, top_volume_count=100):
+            return ["SOL", "HYPE"], {
                 "SOL": {"price": 145.32, "volume_24h_usd": 3_200_000_000, "change_24h_pct": 8.4,
                         "high_24h": 149.10, "low_24h": 132.50, "market_cap_usd": 65_000_000_000, "market_cap_rank": 5},
                 "HYPE": {"price": 54.43, "volume_24h_usd": 202_000_000, "change_24h_pct": 4.34,
                          "high_24h": 56.20, "low_24h": 51.10, "market_cap_usd": 12_200_000_000, "market_cap_rank": 9},
             }
 
-        CoinGeckoDiscoveryProvider.discover_universe = fake_discover
-        CoinGeckoDiscoveryProvider.get_market_overview = fake_overview
+        CoinGeckoDiscoveryProvider.discover_universe_with_overview = fake_discover
 
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=20)
@@ -76,8 +71,7 @@ def main():
         print("\n✅ Dashboard Trending Now preview test passed: real price/volume/24h-range data reaches the dashboard table, not just a list of symbol names.")
 
     finally:
-        CoinGeckoDiscoveryProvider.discover_universe = original_discover
-        CoinGeckoDiscoveryProvider.get_market_overview = original_overview
+        CoinGeckoDiscoveryProvider.discover_universe_with_overview = original_discover
         for k in ["APP_DB_PATH", "STORAGE__DB_PATH"]:
             os.environ.pop(k, None)
         for p in (APP_DB, SCAN_DB):

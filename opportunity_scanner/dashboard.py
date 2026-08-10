@@ -336,46 +336,27 @@ def run_scan(settings, mode: str, universe: list[str]) -> list[ScanResult]:
     return asyncio.run(_run_scan_async(settings, mode, universe))
 
 
-def discover_trending_universe(max_size: int = 25) -> list[str]:
+def discover_trending_universe_with_overview(max_size: int = 25) -> tuple:
     """
     The actual fix for "the scanner only knows coins I hardcoded" — live
     discovery via CoinGecko's trending-search + top-volume rankings,
-    not a fixed list. The provider has its own 15-minute cache
-    internally, so repeat calls within that window are cheap; this
-    function's own job is just the async->sync bridge, same pattern as
-    run_scan above.
+    not a fixed list. Also returns the exact price/volume/24h-range
+    data used to DO the discovery, not a second, separately-sourced
+    lookup — a trending-search hit only gets kept if it has real volume
+    behind it (the fix for spam-adjacent tickers outranking genuine
+    coins), and the preview table needs to show that same verified
+    data, not risk disagreeing with what was actually discovered.
     """
     from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
 
     async def _discover():
         provider = CoinGeckoDiscoveryProvider()
         try:
-            return await provider.discover_universe(max_size=max_size)
+            return await provider.discover_universe_with_overview(max_size=max_size)
         finally:
             await provider.close()
 
     return asyncio.run(_discover())
-
-
-def fetch_trending_overview(symbols: list[str]) -> dict:
-    """
-    Live price/volume/24h-range preview for the discovered universe —
-    reuses the exact same cached CoinGecko fetch as the risk-tier market
-    cap fix (get_market_overview shares a cache entry with
-    get_market_cap_lookup), so this doesn't cost an extra network call
-    beyond what a scan would already make.
-    """
-    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
-
-    async def _fetch():
-        provider = CoinGeckoDiscoveryProvider()
-        try:
-            overview = await provider.get_market_overview(top_n=250)
-            return {s: overview[s] for s in symbols if s in overview}
-        finally:
-            await provider.close()
-
-    return asyncio.run(_fetch())
 
 
 def hydrate_from_storage(storage: ScanStorage) -> tuple[list[ScanResult], Optional[datetime]]:
@@ -547,9 +528,9 @@ with top_r:
 if st.session_state.universe_preset == "🔥 Trending Now":
     if "trending_universe_cache" not in st.session_state:
         with st.spinner("Discovering trending + high-volume coins..."):
-            discovered = discover_trending_universe(max_size=25)
+            discovered, overview = discover_trending_universe_with_overview(max_size=25)
         st.session_state.trending_universe_cache = discovered
-        st.session_state.pop("trending_overview_cache", None)  # force a fresh overview fetch to match
+        st.session_state.trending_overview_cache = overview
     active_universe = st.session_state.trending_universe_cache
     refresh_col, caption_col = st.columns([0.15, 0.85])
     with refresh_col:
@@ -563,13 +544,10 @@ if st.session_state.universe_preset == "🔥 Trending Now":
             active_universe = UNIVERSE_PRESETS["High Liquidity"]
             discovery_failed = True
         else:
-            st.caption(f"Live-discovered from CoinGecko trending + top volume ({len(active_universe)} coins)")
+            st.caption(f"Live-discovered from CoinGecko trending + top volume, verified real liquidity, ranked by 24h volume ({len(active_universe)} coins)")
             discovery_failed = False
 
     if active_universe and not discovery_failed:
-        if "trending_overview_cache" not in st.session_state:
-            with st.spinner("Loading live prices and volume..."):
-                st.session_state.trending_overview_cache = fetch_trending_overview(active_universe)
         overview = st.session_state.trending_overview_cache
         preview_rows = []
         for sym in active_universe:
@@ -595,9 +573,6 @@ if st.session_state.universe_preset == "🔥 Trending Now":
                 "MCap Rank": st.column_config.NumberColumn(format="%d"),
             },
         )
-        missing = [s for s in active_universe if s not in overview]
-        if missing:
-            st.caption(f"No live market data found for: {', '.join(missing)} (likely outside CoinGecko's top 250 by market cap)")
 elif st.session_state.universe_preset == "Custom":
     custom_default = _user.last_universe_custom or ",".join(_settings.universe.default)
     custom_universe_input = st.text_input(

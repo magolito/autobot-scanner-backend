@@ -32,17 +32,16 @@ def main():
         if os.path.exists(p):
             os.remove(p)
 
-    original_discover = CoinGeckoDiscoveryProvider.discover_universe
-    original_overview = CoinGeckoDiscoveryProvider.get_market_overview
+    original_discover = CoinGeckoDiscoveryProvider.discover_universe_with_overview
 
     try:
         # 1. Selecting Trending Now triggers real discovery
-        async def fake_discover(self, max_size=25, top_volume_count=20):
-            return ["HYPE", "PUMP", "BTC", "ETH", "SOL"]
-        async def fake_overview(self, top_n=250):
-            return {}  # empty is fine for this test — it's checking discovery, not the preview table's data
-        CoinGeckoDiscoveryProvider.discover_universe = fake_discover
-        CoinGeckoDiscoveryProvider.get_market_overview = fake_overview
+        async def fake_discover(self, max_size=25, top_volume_count=100):
+            symbols = ["HYPE", "PUMP", "BTC", "ETH", "SOL"]
+            overview = {s: {"price": 1.0, "volume_24h_usd": 1_000_000, "change_24h_pct": 1.0,
+                             "high_24h": 1.1, "low_24h": 0.9, "market_cap_usd": None, "market_cap_rank": None} for s in symbols}
+            return symbols, overview
+        CoinGeckoDiscoveryProvider.discover_universe_with_overview = fake_discover
 
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=20)
@@ -61,9 +60,9 @@ def main():
         print("1. Selecting 'Trending Now' triggers real discovery and shows a live-discovered count, not a static list: OK")
 
         # 2. Discovery failure gracefully falls back
-        async def failing_discover(self, max_size=25, top_volume_count=20):
-            return []  # both sources failed, as the real provider degrades to
-        CoinGeckoDiscoveryProvider.discover_universe = failing_discover
+        async def failing_discover(self, max_size=25, top_volume_count=100):
+            return [], {}  # both sources failed, as the real provider degrades to
+        CoinGeckoDiscoveryProvider.discover_universe_with_overview = failing_discover
 
         at2 = AppTest.from_file(DASHBOARD_PATH)
         at2.run(timeout=20)
@@ -80,7 +79,7 @@ def main():
         print("2. Discovery failure (both CoinGecko sources down) gracefully falls back to High Liquidity with a clear warning, no crash: OK")
 
         # 3. Refresh button clears the cache
-        CoinGeckoDiscoveryProvider.discover_universe = fake_discover
+        CoinGeckoDiscoveryProvider.discover_universe_with_overview = fake_discover
         refresh_btn = next((b for b in at.button if "Refresh" in b.label), None)
         assert refresh_btn is not None
         refresh_btn.click().run(timeout=20)
@@ -90,8 +89,7 @@ def main():
         print("\n✅ Dashboard Trending Now test passed: real discovery reaches the dashboard correctly, failure degrades gracefully, and refresh works.")
 
     finally:
-        CoinGeckoDiscoveryProvider.discover_universe = original_discover
-        CoinGeckoDiscoveryProvider.get_market_overview = original_overview
+        CoinGeckoDiscoveryProvider.discover_universe_with_overview = original_discover
         for k in ["APP_DB_PATH", "STORAGE__DB_PATH"]:
             os.environ.pop(k, None)
         for p in (APP_DB, SCAN_DB):

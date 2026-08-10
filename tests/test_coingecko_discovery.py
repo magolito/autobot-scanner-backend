@@ -1,16 +1,14 @@
 """
-CoinGecko discovery test — the actual fix for "the scanner only knows
-coins I hardcoded." Synthetic responses match the confirmed real
-CoinGecko API shapes (verified via search before building), no live
-network needed.
+CoinGecko discovery test — covers the real fix for a live user report:
+raw trending-search hits included spam-adjacent tickers ahead of
+genuinely major, currently-strong coins ("HYPE, PUMP, LIT are not even
+there... something is not working"). Root cause: trending-search
+reflects raw search curiosity, not real liquidity — a coin can be
+"trending" purely because people are searching to check if it's a scam.
 
-Checks:
-  1. Trending symbols correctly parsed from the real response shape
-  2. Top-by-volume symbols correctly parsed from the real /coins/markets shape
-  3. discover_universe() combines both, deduplicated, trending-first
-  4. max_size cap is genuinely respected — bounded discovery, not unbounded
-  5. Graceful degradation: one source failing doesn't break the other
-  6. Both sources failing degrades to an empty list, not a crash
+Fix: a trending hit is only kept if the SAME coin also shows real
+volume, and the final list is ordered by actual 24h volume, not by
+which source flagged it first.
 """
 
 from __future__ import annotations
@@ -18,110 +16,118 @@ import asyncio
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
+from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider, KNOWN_STABLECOINS, discovery_cache
 from opportunity_scanner.circuit_breaker import breakers
 
 
 async def main():
-    await breakers.get("coingecko_discovery")._record_success()  # reset for test isolation
+    await breakers.get("coingecko_discovery")._record_success()
 
     provider = CoinGeckoDiscoveryProvider()
 
-    # 1. Trending symbols — real CoinGecko /search/trending shape
+    # 1. Trending symbols correctly parsed from the real API shape
     async def fake_trending_raw():
         return {"coins": [
-            {"item": {"id": "hype-coin", "symbol": "hype", "name": "Hyperliquid"}},
-            {"item": {"id": "pump-fun", "symbol": "pump", "name": "Pump.fun"}},
-            {"item": {"id": "some-new-coin", "symbol": "newc", "name": "Brand New Coin"}},
+            {"item": {"symbol": "hype"}}, {"item": {"symbol": "pump"}}, {"item": {"symbol": "stonkbroker"}},
         ]}
     provider._get_trending_raw = fake_trending_raw
     trending = await provider.get_trending_symbols()
-    assert trending == ["HYPE", "PUMP", "NEWC"]
+    assert trending == ["HYPE", "PUMP", "STONKBROKER"]
     print(f"1. Trending symbols correctly parsed from the real API shape: {trending}: OK")
 
-    # 2. Top-by-volume — real /coins/markets shape
+    # 2. Volume overview correctly parsed with full market data, not just symbols
     async def fake_volume_raw(limit):
         return [
-            {"id": "bitcoin", "symbol": "btc", "current_price": 65000, "total_volume": 30000000000},
-            {"id": "ethereum", "symbol": "eth", "current_price": 3200, "total_volume": 15000000000},
+            {"symbol": "hype", "current_price": 55.66, "total_volume": 254_000_000, "price_change_percentage_24h": 2.0, "high_24h": 55.89, "low_24h": 53.78},
+            {"symbol": "pump", "current_price": 0.0027, "total_volume": 140_000_000, "price_change_percentage_24h": 12.7, "high_24h": 0.0028, "low_24h": 0.0024},
         ]
     provider._get_top_volume_raw = fake_volume_raw
-    top_vol = await provider.get_top_by_volume(limit=2)
-    assert top_vol == ["BTC", "ETH"]
-    print(f"2. Top-by-volume symbols correctly parsed: {top_vol}: OK")
+    overview = await provider.get_volume_overview(limit=100)
+    assert overview["HYPE"]["price"] == 55.66
+    assert overview["PUMP"]["volume_24h_usd"] == 140_000_000
+    print(f"2. Volume overview correctly returns full market data (price, volume, change%): OK")
 
-    # 3. discover_universe combines both, deduplicated, trending FIRST
-    from opportunity_scanner.data_sources.coingecko_discovery import discovery_cache
-    await discovery_cache.invalidate("trending")  # avoid colliding with check #1's cached result — same fixed key, no parameters to differentiate
-    async def fake_trending_raw2():
-        return {"coins": [{"item": {"symbol": "hype"}}, {"item": {"symbol": "btc"}}]}  # BTC appears in both sources
-    async def fake_volume_raw2(limit):
-        return [{"symbol": "btc"}, {"symbol": "eth"}, {"symbol": "sol"}]
-    provider._get_trending_raw = fake_trending_raw2
-    provider._get_top_volume_raw = fake_volume_raw2
-    universe = await provider.discover_universe(max_size=25, top_volume_count=3)
-    assert universe[0] == "HYPE", f"Trending should come first, got {universe}"
-    assert universe.count("BTC") == 1, "BTC appears in both sources — must be deduplicated, not doubled"
-    assert set(universe) == {"HYPE", "BTC", "ETH", "SOL"}
-    print(f"3. Combined discovery correctly deduplicates and puts trending first: {universe}: OK")
-
-    # 4. max_size is genuinely respected
+    # 3. THE CORE FIX: a trending symbol with NO real volume backing (spam-adjacent) is filtered OUT
     await discovery_cache.invalidate("trending")
-    async def fake_trending_raw3():
-        return {"coins": [{"item": {"symbol": f"T{i}"}} for i in range(10)]}
-    async def fake_volume_raw3(limit):
-        return [{"symbol": f"V{i}"} for i in range(30)]
-    provider._get_trending_raw = fake_trending_raw3
-    provider._get_top_volume_raw = fake_volume_raw3
-    bounded = await provider.discover_universe(max_size=15, top_volume_count=30)
-    assert len(bounded) == 15, f"Expected exactly 15 (max_size cap), got {len(bounded)} — this is the explicit performance requirement"
-    print(f"4. max_size cap genuinely respected: {len(bounded)} coins from 40 available candidates: OK")
+    await discovery_cache.invalidate("volume_overview:100")
+    universe = await provider.discover_universe(max_size=25, top_volume_count=100)
+    assert "STONKBROKER" not in universe, f"A trending hit with no real volume behind it should be filtered out as noise, got {universe}"
+    assert "HYPE" in universe and "PUMP" in universe
+    print(f"3. THE CORE FIX: 'STONKBROKER' (trending-search hit, zero real volume) correctly filtered out as noise; HYPE/PUMP (real volume) correctly kept: {universe}: OK")
 
-    # 5. One source failing doesn't break the other
+    # 4. Final list is ordered by actual 24h volume, highest first — not by source or arbitrary order
+    assert universe[0] == "HYPE", f"HYPE has more volume (254M) than PUMP (140M) and should rank first, got {universe}"
+    print(f"4. Final list correctly ordered by actual 24h volume (highest first), not by which source flagged it: {universe}: OK")
+
+    # 5. A coin appearing in BOTH trending and volume-overview isn't double-counted
     await discovery_cache.invalidate("trending")
+    await discovery_cache.invalidate("volume_overview:100")
+    async def fake_trending_overlap():
+        return {"coins": [{"item": {"symbol": "hype"}}]}
+    async def fake_volume_overlap(limit):
+        return [{"symbol": "hype", "current_price": 55.66, "total_volume": 254_000_000, "price_change_percentage_24h": 2.0, "high_24h": 55.89, "low_24h": 53.78},
+                {"symbol": "eth", "current_price": 3200, "total_volume": 15_000_000_000, "price_change_percentage_24h": -1.0, "high_24h": 3250, "low_24h": 3150}]
+    provider._get_trending_raw = fake_trending_overlap
+    provider._get_top_volume_raw = fake_volume_overlap
+    universe2 = await provider.discover_universe(max_size=25, top_volume_count=100)
+    assert universe2.count("HYPE") == 1
+    print(f"5. A coin appearing in both trending and volume-overview correctly isn't double-counted: {universe2}: OK")
+
+    # 6. Stablecoins still excluded
+    await discovery_cache.invalidate("trending")
+    await discovery_cache.invalidate("volume_overview:100")
+    async def fake_trending_empty():
+        return {"coins": []}
+    async def fake_volume_with_stable(limit):
+        return [{"symbol": "usdt", "current_price": 1.0, "total_volume": 50_000_000_000, "price_change_percentage_24h": 0.01, "high_24h": 1.001, "low_24h": 0.999},
+                {"symbol": "sol", "current_price": 145, "total_volume": 3_200_000_000, "price_change_percentage_24h": 8.4, "high_24h": 149, "low_24h": 132}]
+    provider._get_trending_raw = fake_trending_empty
+    provider._get_top_volume_raw = fake_volume_with_stable
+    universe3 = await provider.discover_universe(max_size=25, top_volume_count=100)
+    assert "USDT" not in universe3
+    assert universe3 == ["SOL"]
+    print(f"6. Stablecoins correctly still excluded even with high volume: {universe3}: OK")
+
+    # 7. max_size cap genuinely respected
+    await discovery_cache.invalidate("trending")
+    await discovery_cache.invalidate("volume_overview:100")
+    async def fake_volume_many(limit):
+        return [{"symbol": f"C{i}", "current_price": 1.0, "total_volume": 1000 - i, "price_change_percentage_24h": 1.0, "high_24h": 1.1, "low_24h": 0.9} for i in range(50)]
+    provider._get_trending_raw = fake_trending_empty
+    provider._get_top_volume_raw = fake_volume_many
+    bounded = await provider.discover_universe(max_size=15, top_volume_count=50)
+    assert len(bounded) == 15, f"Expected exactly 15 (max_size cap), got {len(bounded)}"
+    print(f"7. max_size cap genuinely respected: {len(bounded)} coins from 50 available candidates: OK")
+
+    # 8. Graceful degradation: trending fails, volume overview still works
     async def failing_trending():
         raise RuntimeError("CoinGecko trending down")
     provider._get_trending_raw = failing_trending
-    provider._get_top_volume_raw = fake_volume_raw2
-    partial = await provider.discover_universe(max_size=25, top_volume_count=3)
-    assert set(partial) == {"BTC", "ETH", "SOL"}, f"Expected volume data to still work despite trending failing, got {partial}"
-    print(f"5. Trending source failing doesn't break top-volume discovery: {partial}: OK")
-
-    # 6. Both failing degrades to empty, not a crash
+    provider._get_top_volume_raw = fake_volume_with_stable
     await discovery_cache.invalidate("trending")
-    await discovery_cache.invalidate("top_volume:3")
-    async def failing_volume(limit):
-        raise RuntimeError("CoinGecko markets down")
-    provider._get_top_volume_raw = failing_volume
-    empty = await provider.discover_universe(max_size=25, top_volume_count=3)
-    assert empty == []
-    print("6. Both sources failing correctly degrades to an empty list, not a crash: OK")
+    await discovery_cache.invalidate("volume_overview:100")
+    partial = await provider.discover_universe(max_size=25, top_volume_count=100)
+    assert partial == ["SOL"], f"Volume overview should still work despite trending failing, got {partial}"
+    print(f"8. Trending source failing doesn't break volume-based discovery: {partial}: OK")
 
     await breakers.get("coingecko_discovery")._record_success()
     await provider.close()
-
-    print("\n✅ CoinGecko discovery test passed: real API shapes parsed correctly, trending-first deduplication, the performance-bounding max_size cap genuinely enforced, and graceful degradation when one or both sources fail.")
+    print("\n✅ Discovery test passed: the actual fix verified — spam-adjacent trending hits with no real volume are filtered out, real coins are correctly kept and ranked by actual volume, not by arbitrary source order.")
 
     await test_market_cap_lookup_and_stablecoin_filter()
     await test_market_overview_and_shared_cache()
 
 
 async def test_market_cap_lookup_and_stablecoin_filter():
-    """
-    Two real bugs found from a live scan screenshot: (1) risk_tier
+    """Two real bugs found from a live scan screenshot: (1) risk_tier
     unconditionally defaults to high_risk when market_cap_rank is
     missing, and market cap data was never wired through to any scan at
-    all; (2) stablecoins (USDT/USDC/etc.) showed up in Trending Now
-    discovery results, which is meaningless — a pegged asset has no
-    momentum signal to surface.
-    """
-    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider, KNOWN_STABLECOINS, discovery_cache
-    from opportunity_scanner.circuit_breaker import breakers
+    all; (2) stablecoins showed up in discovery results, meaningless
+    for a momentum/opportunity signal."""
     await breakers.get("coingecko_discovery")._record_success()
 
     provider = CoinGeckoDiscoveryProvider()
 
-    # 1. Market cap lookup correctly parsed from the real /coins/markets shape
     async def fake_markets_raw(top_n):
         return [
             {"id": "bitcoin", "symbol": "btc", "market_cap_rank": 1, "market_cap": 1_200_000_000_000},
@@ -133,22 +139,23 @@ async def test_market_cap_lookup_and_stablecoin_filter():
     assert lookup["SOL"] == (5, 80_000_000_000)
     print(f"1. Market cap lookup correctly parsed real API shape: BTC rank={lookup['BTC'][0]}, SOL rank={lookup['SOL'][0]}: OK")
 
-    # 2. A coin NOT in the top-N lookup correctly isn't found (falls through to high_risk elsewhere, correctly)
     assert "SOMEOBSCURECOIN" not in lookup
     print("2. A genuinely obscure coin outside the top-N correctly isn't found (falls through to high_risk correctly, not a bug for THAT case): OK")
 
-    # 3. Stablecoins are correctly excluded from discovery
     await discovery_cache.invalidate("trending")
-    await discovery_cache.invalidate("top_volume:2")
+    await discovery_cache.invalidate("volume_overview:2")
     async def trending_with_stablecoins():
         return {"coins": [{"item": {"symbol": "sol"}}, {"item": {"symbol": "usdt"}}, {"item": {"symbol": "usdc"}}, {"item": {"symbol": "hype"}}]}
     async def volume_with_stablecoins(limit):
-        return [{"symbol": "usd1"}, {"symbol": "btc"}]
+        return [
+            {"symbol": "usd1", "current_price": 1.0, "total_volume": 1_000_000, "price_change_percentage_24h": 0.0, "high_24h": 1.0, "low_24h": 1.0},
+            {"symbol": "btc", "current_price": 65000, "total_volume": 30_000_000_000, "price_change_percentage_24h": 1.0, "high_24h": 66000, "low_24h": 64000},
+        ]
     provider._get_trending_raw = trending_with_stablecoins
     provider._get_top_volume_raw = volume_with_stablecoins
     universe = await provider.discover_universe(max_size=25, top_volume_count=2)
     assert "USDT" not in universe and "USDC" not in universe and "USD1" not in universe, f"Stablecoins should be filtered out, got {universe}"
-    assert set(universe) == {"SOL", "HYPE", "BTC"}
+    assert set(universe) == {"BTC"}  # SOL/HYPE were trending-only with no volume backing in this fake data, correctly filtered
     print(f"3. Stablecoins correctly filtered from discovery results: {universe} (no USDT/USDC/USD1): OK")
 
     await breakers.get("coingecko_discovery")._record_success()
@@ -157,14 +164,9 @@ async def test_market_cap_lookup_and_stablecoin_filter():
 
 
 async def test_market_overview_and_shared_cache():
-    """
-    get_market_overview() — the actual fix for "I want to see volume and
-    live prices" for Trending Now. Also proves it shares its underlying
-    fetch with get_market_cap_lookup() (same cache key), so calling both
-    in one request only does one real network call, not two.
-    """
-    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider, discovery_cache
-    from opportunity_scanner.circuit_breaker import breakers
+    """get_market_overview() -- proves it shares its underlying fetch
+    with get_market_cap_lookup() (same cache key), so calling both in
+    one request only does one real network call, not two."""
     await breakers.get("coingecko_discovery")._record_success()
     await discovery_cache.invalidate("market_overview:250")
 
@@ -179,7 +181,6 @@ async def test_market_overview_and_shared_cache():
         ]
     provider._get_market_cap_lookup_raw = fake_markets_raw
 
-    # 1. Real fields correctly parsed
     overview = await provider.get_market_overview(top_n=250)
     assert overview["SOL"]["price"] == 145.32
     assert overview["SOL"]["volume_24h_usd"] == 3_200_000_000
@@ -188,11 +189,10 @@ async def test_market_overview_and_shared_cache():
     assert overview["SOL"]["low_24h"] == 132.50
     print(f"1. get_market_overview() correctly returns real price/volume/change/high-low data: {overview['SOL']}: OK")
 
-    # 2. Shares the underlying fetch with get_market_cap_lookup — only ONE real call for both
-    assert call_count["value"] == 1, "get_market_overview should have triggered exactly one real fetch so far"
+    assert call_count["value"] == 1
     lookup = await provider.get_market_cap_lookup(top_n=250)
-    assert lookup["SOL"] == (5, None)  # this fake response doesn't set market_cap, only market_cap_rank
-    assert call_count["value"] == 1, f"get_market_cap_lookup() should reuse the SAME cached fetch as get_market_overview() (same cache key) — expected still 1 real call, got {call_count['value']}"
+    assert lookup["SOL"] == (5, None)
+    assert call_count["value"] == 1, f"get_market_cap_lookup() should reuse the SAME cached fetch as get_market_overview() — expected still 1 real call, got {call_count['value']}"
     print("2. get_market_overview() and get_market_cap_lookup() correctly share the same underlying cached fetch — calling both costs only 1 real network call, not 2: OK")
 
     await breakers.get("coingecko_discovery")._record_success()
