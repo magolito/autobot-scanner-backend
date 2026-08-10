@@ -1,15 +1,22 @@
 """
 Exchange data source.
 
-OHLCV and ticker data go through ccxt (unified, well-tested across
-exchanges — swap `primary_exchange` in config to point at a different
-venue with minimal code changes).
+Price/OHLCV/ticker and OI/funding all go through a strict priority chain
+(config.market_data_priority, default: Hyperliquid -> CoinGecko ->
+Coinbase -> Kraken -> Bybit), not averaging. First source to answer
+wins — the point is accuracy from the best available source, not
+blending multiple venues' numbers together. Every fetch logs which
+source actually answered (see MarketSnapshot.data_sources), and Bybit
+is deliberately last/optional: it's geo-blocked for US-hosted
+deployments (confirmed live, not theoretical — see MEME_ARCHITECTURE.md
+and the Railway deployment notes), so the scan must never depend on it
+succeeding.
 
-Open interest, funding rate, and long/short account ratio are NOT
-consistently unified across ccxt exchanges, so those go through direct
-calls to Bybit's public v5 REST API. If you swap exchanges, you'll need
-to swap these three methods — they're isolated here specifically so
-that's a contained change.
+OHLCV multi-timeframe candles specifically only participate for
+Hyperliquid and Bybit (the two sources with ccxt-native candle support
+in this implementation) — Coinbase/Kraken contribute ticker/spot-price
+confirmation only, not OHLCV, an explicit scope decision, not a silent
+gap.
 """
 
 from __future__ import annotations
@@ -22,6 +29,8 @@ import ccxt.async_support as ccxt_async
 from ..config import ScannerConfig
 from ..models import MarketSnapshot
 from ..cache import exchange_cache, with_retry
+from .coingecko_derivatives import CoinGeckoDerivativesProvider
+from .us_spot import USSpotProvider
 
 BYBIT_BASE_URL = "https://api.bybit.com"
 
@@ -33,69 +42,148 @@ _DEFAULT_CACHE_TTLS = {
 class ExchangeDataSource:
     def __init__(self, config: ScannerConfig, cache_ttls: Optional[Dict[str, float]] = None):
         self.config = config
-        # Configurable via settings.yaml's resilience.cache_ttl_seconds —
-        # falls back to these defaults if not supplied, so existing callers
-        # that just do ExchangeDataSource(config) are unaffected.
         self.cache_ttls = cache_ttls or dict(_DEFAULT_CACHE_TTLS)
+        self.priority: List[str] = list(getattr(config, "market_data_priority", None) or ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"])
+
         exchange_cls = getattr(ccxt_async, config.primary_exchange)
-        self.exchange = exchange_cls({"enableRateLimit": True})
+        self.exchange = exchange_cls({"enableRateLimit": True})  # kept for backward compat + as the "bybit" priority slot
+        self._hyperliquid = ccxt_async.hyperliquid({"enableRateLimit": True})
+        self._coingecko = CoinGeckoDerivativesProvider()
+        self._us_spot = USSpotProvider()
         self._http = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
 
     async def close(self):
         await self.exchange.close()
+        await self._hyperliquid.close()
+        await self._coingecko.close()
+        await self._us_spot.close()
         await self._http.aclose()
 
     # ---------------------------------------------------------------- OHLCV
+    #
+    # Every _with_source variant below returns (value, source_str) — no
+    # shared mutable state on `self`, which matters because
+    # asyncio.gather() runs these concurrently (both within one
+    # build_snapshot call, and across DIFFERENT symbols' concurrent
+    # build_snapshot calls during scan_many). An instance-level
+    # "self._last_sources" dict would race across concurrent calls;
+    # returning the source directly alongside the value, per-call,
+    # can't race because there's nothing shared to race over. Public
+    # methods (fetch_ticker_data, fetch_funding_rate, etc.) keep their
+    # original return types for backward compatibility — they're thin
+    # wrappers that discard the source label.
 
-    async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
-        cache_key = f"ohlcv:{symbol}:{timeframe}:{limit}"
+    async def _fetch_ohlcv_from(self, source: str, base: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
+        try:
+            if source == "hyperliquid":
+                raw = await self._hyperliquid.fetch_ohlcv(f"{base}/USDC:USDC", timeframe=timeframe, limit=limit)
+            elif source == "bybit":
+                raw = await self.exchange.fetch_ohlcv(f"{base}/USDT", timeframe=timeframe, limit=limit)
+            else:
+                return None  # coingecko/coinbase/kraken don't participate in OHLCV — see module docstring
+        except Exception as e:  # noqa: BLE001 — best-effort per-source pull, the chain handles failure
+            print(f"[exchange:{source}] OHLCV fetch failed for {base} {timeframe}: {e}")
+            return None
+        if not raw:
+            return None
+        df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        return df
+
+    async def _fetch_ohlcv_with_source(self, symbol: str, timeframe: str, limit: int) -> tuple:
+        base = symbol.split("/")[0]
+        cache_key = f"ohlcv:{base}:{timeframe}:{limit}"
 
         async def fetch():
-            try:
-                raw = await self.exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-            except Exception as e:  # noqa: BLE001 — deliberately broad, this is a best-effort data pull
-                print(f"[exchange] OHLCV fetch failed for {symbol} {timeframe}: {e}")
-                return None
-            if not raw:
-                return None
-            df = pd.DataFrame(raw, columns=["timestamp", "open", "high", "low", "close", "volume"])
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            return df
+            for source in self.priority:
+                if source not in ("hyperliquid", "bybit"):
+                    continue  # only these two support OHLCV in this implementation
+                df = await self._fetch_ohlcv_from(source, base, timeframe, limit)
+                if df is not None and not df.empty:
+                    return (df, source)
+            return (None, "none")
 
-        # cache TTL scales with timeframe — no point re-fetching 1d candles every 20s
         ttl = self.cache_ttls.get(timeframe, 120)
-        return await exchange_cache.get_or_fetch(cache_key, ttl_seconds=ttl, fetch_fn=fetch)
+        result = await exchange_cache.get_or_fetch(cache_key, ttl_seconds=ttl, fetch_fn=fetch)
+        return result if result is not None else (None, "none")
 
-    async def fetch_multi_timeframe_ohlcv(self, symbol: str) -> Dict[str, pd.DataFrame]:
+    async def _fetch_ohlcv(self, symbol: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
+        df, _source = await self._fetch_ohlcv_with_source(symbol, timeframe, limit)
+        return df
+
+    async def fetch_multi_timeframe_ohlcv_with_source(self, symbol: str) -> tuple:
+        """Returns (Dict[timeframe, DataFrame], representative_source) —
+        the source of whichever timeframe answered first/most, since in
+        practice every timeframe for one symbol comes from the same
+        priority-chain source (they all try the same chain in the same
+        order)."""
         tf_config = self.config.timeframe_config
         tasks = {
-            tf: self._fetch_ohlcv(symbol, tf, tf_config.candles_per_timeframe)
+            tf: self._fetch_ohlcv_with_source(symbol, tf, tf_config.candles_per_timeframe)
             for tf in tf_config.timeframes
         }
         results = await asyncio.gather(*tasks.values())
-        return {tf: df for tf, df in zip(tasks.keys(), results) if df is not None}
+        dfs = {tf: df for tf, (df, _src) in zip(tasks.keys(), results) if df is not None}
+        sources_used = [src for _df, src in results if src != "none"]
+        representative_source = sources_used[0] if sources_used else "none"
+        return dfs, representative_source
+
+    async def fetch_multi_timeframe_ohlcv(self, symbol: str) -> Dict[str, pd.DataFrame]:
+        dfs, _source = await self.fetch_multi_timeframe_ohlcv_with_source(symbol)
+        return dfs
 
     # ---------------------------------------------------------------- ticker
 
-    async def fetch_ticker_data(self, symbol: str) -> dict:
-        cache_key = f"ticker:{symbol}"
+    async def _fetch_ticker_from(self, source: str, base: str) -> Optional[dict]:
+        try:
+            if source == "hyperliquid":
+                t = await self._hyperliquid.fetch_ticker(f"{base}/USDC:USDC")
+                spread_pct = None
+                if t.get("bid") and t.get("ask") and t["bid"] > 0:
+                    spread_pct = (t["ask"] - t["bid"]) / t["bid"] * 100
+                return {"price": t.get("last"), "volume_24h_usd": t.get("quoteVolume") or 0.0, "bid_ask_spread_pct": spread_pct}
+
+            if source == "coingecko":
+                snap = await self._coingecko.get_snapshot(base)
+                if snap is None or snap.price is None:
+                    return None
+                return {"price": snap.price, "volume_24h_usd": 0.0, "bid_ask_spread_pct": None}
+
+            if source in ("coinbase", "kraken"):
+                spot = await self._us_spot.get_spot_price(base)
+                if spot is None or spot.price is None or spot.source != source:
+                    return None  # get_spot_price itself tries coinbase-then-kraken; only accept if it matched the source we're currently trying
+                return {"price": spot.price, "volume_24h_usd": spot.volume_24h_usd or 0.0, "bid_ask_spread_pct": None}
+
+            if source == "bybit":
+                t = await self.exchange.fetch_ticker(f"{base}/USDT")
+                spread_pct = None
+                if t.get("bid") and t.get("ask") and t["bid"] > 0:
+                    spread_pct = (t["ask"] - t["bid"]) / t["bid"] * 100
+                return {"price": t.get("last"), "volume_24h_usd": t.get("quoteVolume") or 0.0, "bid_ask_spread_pct": spread_pct}
+        except Exception as e:  # noqa: BLE001
+            print(f"[exchange:{source}] ticker fetch failed for {base}: {e}")
+            return None
+        return None
+
+    async def fetch_ticker_data_with_source(self, symbol: str) -> tuple:
+        base = symbol.split("/")[0]
+        cache_key = f"ticker:{base}"
 
         async def fetch():
-            try:
-                t = await self.exchange.fetch_ticker(symbol)
-            except Exception as e:  # noqa: BLE001
-                print(f"[exchange] ticker fetch failed for {symbol}: {e}")
-                return None
-            spread_pct = None
-            if t.get("bid") and t.get("ask") and t["bid"] > 0:
-                spread_pct = (t["ask"] - t["bid"]) / t["bid"] * 100
-            return {
-                "price": t.get("last"),
-                "volume_24h_usd": (t.get("quoteVolume") or 0.0),
-                "bid_ask_spread_pct": spread_pct,
-            }
+            for source in self.priority:
+                result = await self._fetch_ticker_from(source, base)
+                if result is not None and result.get("price") is not None:
+                    print(f"[exchange] {base} price sourced from {source}")
+                    return (result, source)
+            print(f"[exchange] {base} price unavailable from every source in priority order: {self.priority}")
+            return ({}, "none")
 
         result = await exchange_cache.get_or_fetch(cache_key, ttl_seconds=self.cache_ttls.get("ticker", 20), fetch_fn=fetch)
+        return result if result is not None else ({}, "none")
+
+    async def fetch_ticker_data(self, symbol: str) -> dict:
+        result, _source = await self.fetch_ticker_data_with_source(symbol)
         return result or {}
 
     # ------------------------------------------------------- open interest
@@ -109,45 +197,113 @@ class ExchangeDataSource:
         resp.raise_for_status()
         return resp.json()
 
+    async def fetch_open_interest_history_with_source(self, base: str, quote: str = "USDT") -> tuple:
+        """
+        Priority chain, not Bybit-only. Bybit is the only source with a
+        real HISTORY endpoint (multiple past OI points), so if Bybit is
+        reachable it's still genuinely useful for the trend calc even
+        though it's last in priority for "which single number is most
+        accurate" — Hyperliquid/CoinGecko give a current snapshot only
+        (wrapped as a single-point history), which is enough for the
+        current-value pillars but not for trend detection. This is a
+        real, honest tradeoff: prioritizing Bybit's history over its
+        general reliability would contradict "never let Bybit being
+        blocked break the scan," so single-point-history from a higher-
+        priority source is preferred, with Bybit's fuller history used
+        only when nothing higher-priority answered at all.
+        """
+        for source in self.priority:
+            if source == "hyperliquid":
+                try:
+                    oi = await self._hyperliquid.fetch_open_interest(f"{base}/USDC:USDC")
+                    current = oi.get("openInterestValue") if oi else None
+                except Exception as e:  # noqa: BLE001
+                    print(f"[exchange:hyperliquid] OI fetch failed for {base}: {e}")
+                    current = None
+                if current is not None:
+                    return (pd.DataFrame([{"ts": pd.Timestamp.now(tz="UTC"), "oi_usd": current}]), "hyperliquid")
+
+            elif source == "coingecko":
+                snap = await self._coingecko.get_snapshot(base)
+                if snap is not None and snap.open_interest_usd is not None:
+                    return (pd.DataFrame([{"ts": pd.Timestamp.now(tz="UTC"), "oi_usd": snap.open_interest_usd}]), "coingecko")
+
+            elif source == "bybit":
+                symbol = f"{base}{quote}"
+                cache_key = f"oi:{symbol}"
+
+                async def fetch():
+                    try:
+                        data = await self._fetch_open_interest_raw(symbol)
+                    except Exception as e:  # noqa: BLE001
+                        print(f"[exchange:bybit] OI fetch failed for {symbol}: {e}")
+                        return None
+                    rows = data.get("result", {}).get("list", [])
+                    if not rows:
+                        return None
+                    df = pd.DataFrame(rows)
+                    if "openInterest" not in df.columns or "timestamp" not in df.columns:
+                        return None
+                    df["oi_usd"] = df["openInterest"].astype(float)
+                    df["ts"] = pd.to_datetime(df["timestamp"].astype("int64"), unit="ms")
+                    return df[["ts", "oi_usd"]].sort_values("ts").reset_index(drop=True)
+
+                result = await exchange_cache.get_or_fetch(cache_key, ttl_seconds=self.cache_ttls.get("open_interest", 300), fetch_fn=fetch)
+                if result is not None:
+                    return (result, "bybit")
+
+        return (None, "none")
+
     async def fetch_open_interest_history(self, base: str, quote: str = "USDT") -> Optional[pd.DataFrame]:
-        """
-        Bybit v5 open interest, linear perps. Returns recent snapshots so
-        callers can compute % change over the window. Bybit's public
-        endpoint returns historical points directly (no need for us to
-        poll over time ourselves), unlike a pure ticker snapshot.
-        """
-        symbol = f"{base}{quote}"
-        cache_key = f"oi:{symbol}"
+        df, _source = await self.fetch_open_interest_history_with_source(base, quote)
+        return df
 
-        async def fetch():
-            try:
-                data = await self._fetch_open_interest_raw(symbol)
-            except Exception as e:  # noqa: BLE001
-                print(f"[exchange] OI fetch failed for {symbol}: {e}")
-                return None
-            rows = data.get("result", {}).get("list", [])
-            if not rows:
-                return None
-            df = pd.DataFrame(rows)
-            if "openInterest" not in df.columns or "timestamp" not in df.columns:
-                return None
-            df["oi_usd"] = df["openInterest"].astype(float)
-            df["ts"] = pd.to_datetime(df["timestamp"].astype("int64"), unit="ms")
-            return df[["ts", "oi_usd"]].sort_values("ts").reset_index(drop=True)
+    async def fetch_funding_rate_with_source(self, base: str, quote: str = "USDT") -> tuple:
+        for source in self.priority:
+            if source == "hyperliquid":
+                try:
+                    fr = await self._hyperliquid.fetch_funding_rate(f"{base}/USDC:USDC")
+                    rate = fr.get("fundingRate") if fr else None
+                except Exception as e:  # noqa: BLE001
+                    print(f"[exchange:hyperliquid] funding rate fetch failed for {base}: {e}")
+                    rate = None
+                if rate is not None:
+                    return (rate, "hyperliquid")
 
-        return await exchange_cache.get_or_fetch(cache_key, ttl_seconds=self.cache_ttls.get("open_interest", 300), fetch_fn=fetch)
+            elif source == "coingecko":
+                snap = await self._coingecko.get_snapshot(base)
+                if snap is not None and snap.funding_rate is not None:
+                    return (snap.funding_rate, "coingecko")
+
+            elif source == "bybit":
+                symbol = f"{base}/{quote}:{quote}"
+                try:
+                    fr = await self.exchange.fetch_funding_rate(symbol)
+                    rate = fr.get("fundingRate") if fr else None
+                except Exception as e:  # noqa: BLE001
+                    print(f"[exchange:bybit] funding rate fetch failed for {symbol}: {e}")
+                    rate = None
+                if rate is not None:
+                    return (rate, "bybit")
+
+        return (None, "none")
 
     async def fetch_funding_rate(self, base: str, quote: str = "USDT") -> Optional[float]:
-        symbol = f"{base}/{quote}:{quote}"  # ccxt unified swap symbol notation
-        try:
-            fr = await self.exchange.fetch_funding_rate(symbol)
-            return fr.get("fundingRate")
-        except Exception as e:  # noqa: BLE001
-            print(f"[exchange] funding rate fetch failed for {symbol}: {e}")
-            return None
+        rate, _source = await self.fetch_funding_rate_with_source(base, quote)
+        return rate
 
-    async def fetch_long_short_ratio(self, base: str, quote: str = "USDT") -> Optional[float]:
-        """Bybit v5 account long/short ratio — not unified in ccxt, raw call."""
+    async def fetch_long_short_ratio_with_source(self, base: str, quote: str = "USDT") -> tuple:
+        """
+        Honest limitation, stated plainly: none of Hyperliquid, CoinGecko,
+        Coinbase, or Kraken expose a public account-level long/short
+        ratio the way Bybit's v5 API does. This stays Bybit-only —
+        gracefully None (not a crash, not a fabricated value) if Bybit
+        is unreachable, exactly the "never let Bybit block the scan"
+        requirement, just with no higher-priority substitute available
+        for this specific data point.
+        """
+        if "bybit" not in self.priority:
+            return (None, "none")
         symbol = f"{base}{quote}"
         try:
             resp = await self._http.get(
@@ -158,16 +314,20 @@ class ExchangeDataSource:
             data = resp.json()
             rows = data.get("result", {}).get("list", [])
             if not rows:
-                return None
+                return (None, "none")
             row = rows[0]
             buy_ratio = float(row.get("buyRatio", 0))
             sell_ratio = float(row.get("sellRatio", 0))
             if sell_ratio == 0:
-                return None
-            return buy_ratio / sell_ratio
+                return (None, "none")
+            return (buy_ratio / sell_ratio, "bybit")
         except Exception as e:  # noqa: BLE001
-            print(f"[exchange] long/short ratio fetch failed for {symbol}: {e}")
-            return None
+            print(f"[exchange:bybit] long/short ratio fetch failed for {symbol}: {e}")
+            return (None, "none")
+
+    async def fetch_long_short_ratio(self, base: str, quote: str = "USDT") -> Optional[float]:
+        ratio, _source = await self.fetch_long_short_ratio_with_source(base, quote)
+        return ratio
 
     # --------------------------------------------------------- orchestrator
 
@@ -181,13 +341,22 @@ class ExchangeDataSource:
         quote = quote or self.config.quote_currency
         symbol = f"{base}/{quote}"
 
-        ohlcv, ticker, oi_history, funding, long_short = await asyncio.gather(
-            self.fetch_multi_timeframe_ohlcv(symbol),
-            self.fetch_ticker_data(symbol),
-            self.fetch_open_interest_history(base, quote),
-            self.fetch_funding_rate(base, quote),
-            self.fetch_long_short_ratio(base, quote),
-        )
+        # Every awaited coroutine here returns (value, source) directly —
+        # no shared instance state, so this is safe even when scan_many
+        # runs build_snapshot for many symbols concurrently.
+        (ohlcv, ohlcv_source), (ticker, ticker_source), (oi_history, oi_source), \
+            (funding, funding_source), (long_short, ls_source) = await asyncio.gather(
+                self.fetch_multi_timeframe_ohlcv_with_source(symbol),
+                self.fetch_ticker_data_with_source(symbol),
+                self.fetch_open_interest_history_with_source(base, quote),
+                self.fetch_funding_rate_with_source(base, quote),
+                self.fetch_long_short_ratio_with_source(base, quote),
+            )
+
+        data_sources = {
+            "price": ticker_source, "ohlcv": ohlcv_source, "open_interest": oi_source,
+            "funding_rate": funding_source, "long_short_ratio": ls_source,
+        }
 
         return MarketSnapshot(
             symbol=symbol,
@@ -202,4 +371,5 @@ class ExchangeDataSource:
             open_interest_usd=(oi_history["oi_usd"].iloc[-1] if oi_history is not None and len(oi_history) else None),
             funding_rate=funding,
             long_short_ratio=long_short,
+            data_sources=data_sources,
         )

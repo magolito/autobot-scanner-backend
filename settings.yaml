@@ -79,8 +79,15 @@ regime:
   volatility_normalize_hi: 1.20
 
 exchange:
-  primary: bybit
+  primary: bybit   # legacy — only used as the "bybit" slot in market_data_priority below; not the sole source anymore
   quote_currency: USDT
+  # Strict priority order for price/OHLCV/OI/funding — first source to
+  # answer wins, no averaging. Hyperliquid first (no US restriction,
+  # matches what AutoBot actually trades), Bybit last and optional
+  # (confirmed geo-blocked for US-hosted deployments via a live Railway
+  # deployment). Drop "bybit" from this list entirely if you'd rather
+  # not even attempt it.
+  market_data_priority: ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"]
 
 universe:
   default: ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT"]

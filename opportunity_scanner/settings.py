@@ -83,6 +83,14 @@ class RegimeSettings(BaseModel):
 class ExchangeSettings(BaseModel):
     primary: str = "bybit"
     quote_currency: str = "USDT"
+    # Strict priority order for price/OHLCV/OI/funding, tried in order —
+    # first success wins, no averaging. Hyperliquid first (no US
+    # restriction, matches what AutoBot actually trades), Bybit last and
+    # optional (confirmed geo-blocked for US-hosted deployments via a
+    # live Railway deployment, not theoretical). Override this list to
+    # change the order without touching code, e.g. to drop Bybit
+    # entirely once it's no longer worth even trying.
+    market_data_priority: List[str] = ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"]
 
 
 class UniverseSettings(BaseModel):
@@ -632,6 +640,7 @@ class Settings(BaseSettings):
             sector_map=dict(self.sector_map),
             primary_exchange=self.exchange.primary,
             quote_currency=self.exchange.quote_currency,
+            market_data_priority=list(self.exchange.market_data_priority),
             lunarcrush_api_key=self.lunarcrush_api_key,
         )
 

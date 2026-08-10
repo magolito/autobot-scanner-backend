@@ -22,6 +22,7 @@ class MarketSnapshot:
     funding_rate: Optional[float] = None
     long_short_ratio: Optional[float] = None                       # >1 = more longs than shorts
     social: Optional[Dict] = None                                  # raw social metrics blob
+    data_sources: Dict[str, str] = field(default_factory=dict)     # e.g. {"price": "hyperliquid", "ohlcv": "hyperliquid", "open_interest": "coingecko", "funding_rate": "bybit"} — which source actually answered each data point, for accuracy auditing
 
 
 @dataclass

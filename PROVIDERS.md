@@ -5,47 +5,63 @@ what to upgrade to, and why. Pricing/specifics verified via web search as
 of this writing; providers change pricing without notice, so treat exact
 numbers as directional.
 
-## Price / OHLCV / Volume
+## Price / OHLCV / Volume, Open Interest, Funding Rates (rebalanced)
 
-**Free, primary: Bybit public API (direct, via ccxt)** — already built,
-zero cost, no key. Good depth for any coin with a Bybit perpetual.
+**Strict priority chain, not averaging: Hyperliquid → CoinGecko
+Derivatives → Coinbase/Kraken (spot confirmation) → Bybit (last,
+optional).** This replaced an earlier Bybit-primary design after a real
+live deployment (Railway) confirmed Bybit actively CloudFront-blocks
+US-hosted server traffic — not theoretical, an actual production
+failure with every price/OI/funding/OHLCV call returning
+`"The Amazon CloudFront distribution is configured to block access from
+your country"`. Given AutoBot's real trading business is US-based and
+already runs on Hyperliquid, rebalancing toward the source with no such
+restriction was the correct fix — not a proxy/geo-bypass around Bybit's
+deliberate compliance control, which would have been circumventing it
+rather than fixing the actual mismatch.
 
-**Free, fallback: CoinGecko public API** — broader coin coverage
-(thousands of coins vs. only what's listed on Bybit), useful for the
-long tail of small/new coins the "High Risk / New" tier surfaces.
+- **Hyperliquid** (primary) — no key, no US restriction, matches
+  AutoBot's own trading venue. Current-snapshot OI/funding (no history
+  endpoint at the free tier), real OHLCV candles via ccxt.
+- **CoinGecko Derivatives** (secondary) — free, no key, one API call
+  covers every tracked base symbol across every exchange CoinGecko
+  aggregates (`GET /derivatives`, filtered client-side). Used when
+  Hyperliquid doesn't have a contract or is down. Picks the highest-open-
+  interest *perpetual* contract per symbol as the representative price —
+  the most liquid venue is the most representative of the real market.
+  No OHLCV history from this source, ticker/OI/funding only.
+- **Coinbase** (spot confirmation) — free, no key, explicitly serves US
+  customers. Ticker + spot price only, no derivatives data.
+- **Kraken** (spot confirmation, narrower coverage) — free, no key, also
+  explicitly US-facing. Pair-code naming is inconsistent across coins
+  (e.g. "XBT" not "BTC"), so only major coins are mapped — an unmapped
+  symbol falls through cleanly rather than guessing a pair code.
+- **Bybit** (last, optional) — richest OI *history* when reachable (the
+  only source with real historical points, useful for trend calc), but
+  never depended on: every fetch degrades gracefully to the next source
+  in priority, and the scan never fails outright just because Bybit is
+  blocked.
 
-**Paid upgrade path, if you outgrow both:** CoinAPI or Kaiko for
-tick-level, audit-grade multi-exchange normalized data. Overkill until
-you're doing real quant research or need sub-100ms feeds — not needed
-for this product today.
-
-## Open Interest, Funding Rates, Long/Short Ratios (multi-exchange)
-
-**Free tier: Bybit + Hyperliquid, averaged.** Deliberately just these two —
-they're exactly the venues AutoBot itself trades on, so the scanner's read
-of "what's strong" stays consistent with what AutoBot can actually
-execute. Binance was evaluated and left out: it's geo-blocked for US IPs
-(Binance.com returns 451 for US traffic), and doesn't match either of
-AutoBot's real trading venues — a third source there would have added
-hosting complexity (avoid US regions, or accept it silently degrading)
-for no real product benefit. Two aligned sources beats three misaligned
-ones.
-
-- **Bybit** (primary) — richest data: full OI history for trend
-  calculation, global long/short ratio. No key needed.
-- **Hyperliquid** — no key needed, no OI history endpoint at this tier
-  (current snapshot only, same limitation as most free derivatives APIs).
+Every fetch logs which source actually answered
+(`MarketSnapshot.data_sources`, e.g. `{"price": "hyperliquid",
+"open_interest": "coingecko", ...}`), so accuracy is auditable per data
+point, not just assumed. The priority order itself is configurable via
+`settings.yaml`'s `exchange.market_data_priority` — no code changes
+needed to add, remove, or reorder a source.
 
 **Paid upgrade, if you want top-trader ratio:** CoinGlass aggregates 6
-exchanges including top-trader position ratio, which neither free source
-exposes. 2026 pricing: Hobbyist $29/mo (personal use, 30 req/min),
-Startup $79/mo, Standard $299/mo (**required for commercial/product
-use**), Professional $699/mo. Standard is the realistic floor once you
-want top-trader ratio live in a product people use.
-
-**Design decision:** the aggregator is built so CoinGlass is a drop-in
-upgrade, not a rewrite — same interface, provider swapped underneath.
-See `MultiExchangeOIProvider`.
+exchanges including top-trader position ratio, which none of the free
+sources above expose. 2026 pricing: Hobbyist $29/mo (personal use, 30
+req/min), Startup $79/mo, Standard $299/mo (**required for
+commercial/product use**), Professional $699/mo. This is a genuinely
+separate, still-unwired-into-the-live-path integration
+(`MultiExchangeOIProvider`/`CoinGlassProvider` in
+`data_sources/multi_exchange_oi.py`) — built and tested in an earlier
+phase, but discovered during this rebalancing work to have never
+actually been called by the real scan pipeline (`scanner.py` only ever
+used `ExchangeDataSource.build_snapshot()` directly). Worth wiring in
+properly if/when a CoinGlass subscription is added, rather than left as
+dead code indefinitely.
 
 ## Social Virality
 

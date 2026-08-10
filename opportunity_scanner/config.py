@@ -158,6 +158,17 @@ class ScannerConfig:
 
     # Exchange to use for OHLCV / OI / funding / long-short ratio (ccxt id)
     primary_exchange: str = "bybit"
+    # Strict priority order for price/OHLCV/OI/funding — tried in order,
+    # first success wins, no averaging. Hyperliquid first (no US
+    # restriction, matches what AutoBot actually trades), Bybit last and
+    # optional (per the explicit "never let Bybit being blocked break the
+    # scan" requirement). Configurable via settings.yaml's
+    # market_data_priority — see Settings.to_scanner_config().
+    market_data_priority: list = None  # set to the real default in __post_init__ below
+
+    def __post_init__(self):
+        if self.market_data_priority is None:
+            self.market_data_priority = ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"]
     quote_currency: str = "USDT"
 
     # LunarCrush (social pillar) — see data_sources/social.py
