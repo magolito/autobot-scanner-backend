@@ -545,12 +545,14 @@ def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
     rows = []
     for i, r in enumerate(results, 1):
         f = r.factors
+        social_available = f["social"].available
         rows.append({
             "Rank": i, "Symbol": r.base, "Score": r.composite_score, "Signal": r.signal,
             "Confidence": r.confidence, "Strength": f["strength"].score if f["strength"].available else None,
             "OI": f["oi_dynamics"].score if f["oi_dynamics"].available else None,
             "Momentum": f["momentum"].score if f["momentum"].available else None,
-            "Social": f["social"].score if f["social"].available else None,
+            "Social": f["social"].score if social_available else None,
+            "Narrative": f["social"].raw.get("narrative_signal", "—") if social_available else "—",
             "Price": r.price, "Risk": r.risk_tier,
         })
     return pd.DataFrame(rows)
@@ -657,6 +659,23 @@ def show_detail(result: ScanResult):
               <div class="pillar-track"><div class="pillar-fill" style="width:{score}%;background:{color}"></div></div>
             </div>
             """, unsafe_allow_html=True)
+
+        social_factor = result.factors.get("social")
+        if social_factor and social_factor.available and social_factor.raw:
+            raw = social_factor.raw
+            st.markdown('<div class="mono-label" style="margin-top:20px">Social detail</div>', unsafe_allow_html=True)
+            narrative = raw.get("narrative_signal", "—")
+            spike_note = " · attention accelerating right now" if raw.get("is_spike") else ""
+            st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:13px;color:#f5f4f0;margin-bottom:8px">{narrative}{spike_note}</div>', unsafe_allow_html=True)
+            sm1, sm2, sm3, sm4 = st.columns(4)
+            with sm1:
+                st.metric("Galaxy Score", f"{raw['galaxy_score']:.0f}" if raw.get("galaxy_score") is not None else "—")
+            with sm2:
+                st.metric("AltRank", f"{raw['alt_rank']:.0f}" if raw.get("alt_rank") is not None else "—")
+            with sm3:
+                st.metric("Sentiment", f"{raw['sentiment']:.0f}%" if raw.get("sentiment") is not None else "—")
+            with sm4:
+                st.metric("Dominance", f"{raw['social_dominance']:.1f}%" if raw.get("social_dominance") is not None else "—")
 
     st.markdown('<div class="mono-label" style="margin-top:24px">Thesis</div>', unsafe_allow_html=True)
     thesis_text = " ".join(result.reasons_summary[:4]) if result.reasons_summary else "No explanation available."
