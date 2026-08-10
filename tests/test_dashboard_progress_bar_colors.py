@@ -1,9 +1,16 @@
 """
-Dashboard progress bar color test — direct user request: Score and
-Confidence bars should be green above 50, red below. Uses Streamlit's
-native ProgressColumn(color="auto") feature (green above half, red
-below), not a custom workaround — verified via the actual column
-config Streamlit sends to the frontend, not just "no exception raised."
+Dashboard progress bar color test — Confidence uses Streamlit's native
+color="auto" (green above 50%, red below), since "more/less than half
+confident" doesn't compete with any other label.
+
+Score deliberately does NOT use color="auto" — a real design bug caught
+from a live report: color="auto" splits at a flat 50%, but the Signal
+label uses different, real thresholds (80/65/45/25), so a score like
+57.2 could show a green bar (>50%) right next to a "Neutral" signal
+label (<65 for Buy) — two different thresholds visually disagreeing
+with each other. The Signal column's own emoji indicator already
+correctly encodes this using the real thresholds, so Score's bar stays
+plain rather than sending a second, conflicting signal.
 """
 
 from __future__ import annotations
@@ -85,13 +92,13 @@ def main():
                 if color_idx2 != -1 and (color_idx2 - confidence_idx2) < 200:
                     found_confidence_auto = True
 
-        assert found_score_auto, "Expected the Score column's ProgressColumn config to include color='auto' (green above 50, red below)"
-        print("1. Score progress bar correctly configured with color='auto' (green above 50%, red below): OK")
+        assert not found_score_auto, "Score should NOT use color='auto' — it would conflict with the Signal label's real thresholds (80/65/45/25), not a flat 50%"
+        print("1. Score progress bar correctly does NOT use color='auto', avoiding a false 'green but Neutral' contradiction with the Signal label: OK")
 
         assert found_confidence_auto, "Expected the Confidence column's ProgressColumn config to include color='auto'"
-        print("2. Confidence progress bar correctly configured with color='auto' (green above 50%, red below): OK")
+        print("2. Confidence progress bar correctly configured with color='auto' (green above 50%, red below) — no competing label to conflict with: OK")
 
-        print("\n✅ Dashboard progress bar color test passed: Score and Confidence bars use Streamlit's native auto-coloring (green >50%, red <50%), verified in the actual rendered column config, not just 'no exception raised.'")
+        print("\n✅ Dashboard progress bar color test passed: Confidence uses native auto-coloring; Score deliberately doesn't, avoiding a real, confirmed visual contradiction with the Signal label's actual thresholds.")
 
     finally:
         for k in ["APP_DB_PATH", "STORAGE__DB_PATH"]:
