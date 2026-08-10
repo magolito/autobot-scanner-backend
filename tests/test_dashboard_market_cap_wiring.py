@@ -36,17 +36,22 @@ def main():
 
     captured = {}
 
-    async def fake_lookup(self, top_n=250):
-        return {"BTC": (1, 1_200_000_000_000), "SOL": (5, 80_000_000_000)}
+    async def fake_overview(self, top_n=250):
+        return {
+            "BTC": {"market_cap_rank": 1, "market_cap_usd": 1_200_000_000_000, "volume_24h_usd": 30_000_000_000,
+                    "price": 65000, "change_24h_pct": 1.0, "high_24h": 66000, "low_24h": 64000},
+            "SOL": {"market_cap_rank": 5, "market_cap_usd": 80_000_000_000, "volume_24h_usd": 3_000_000_000,
+                    "price": 150, "change_24h_pct": 1.0, "high_24h": 155, "low_24h": 145},
+        }
 
     async def fake_scan_many(self, bases, market_caps=None, market_cap_ranks=None, **kwargs):
         captured["market_caps"] = market_caps
         captured["market_cap_ranks"] = market_cap_ranks
         return []
 
-    original_lookup = CoinGeckoDiscoveryProvider.get_market_cap_lookup
+    original_overview = CoinGeckoDiscoveryProvider.get_market_overview
     original_scan_many = OpportunityScanner.scan_many
-    CoinGeckoDiscoveryProvider.get_market_cap_lookup = fake_lookup
+    CoinGeckoDiscoveryProvider.get_market_overview = fake_overview
     OpportunityScanner.scan_many = fake_scan_many
 
     try:
@@ -70,7 +75,7 @@ def main():
         print("\n✅ Dashboard market cap wiring test passed in a real running app: the actual fix for the always-high_risk bug reaches scan_many() correctly, not just in isolation.")
 
     finally:
-        CoinGeckoDiscoveryProvider.get_market_cap_lookup = original_lookup
+        CoinGeckoDiscoveryProvider.get_market_overview = original_overview
         OpportunityScanner.scan_many = original_scan_many
         for k in ["APP_DB_PATH", "STORAGE__DB_PATH"]:
             os.environ.pop(k, None)

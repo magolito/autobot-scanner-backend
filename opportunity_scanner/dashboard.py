@@ -287,7 +287,7 @@ def derive_display_flags(result: ScanResult) -> list[dict]:
     return flags
 
 
-async def _run_scan_async(settings, mode: str, universe: list[str]) -> list[ScanResult]:
+async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> list[ScanResult]:
     config = settings.to_scanner_config()
     config.timeframe_config.timeframe_weights = dict(MODE_TIMEFRAME_WEIGHTS[mode])
 
@@ -302,20 +302,43 @@ async def _run_scan_async(settings, mode: str, universe: list[str]) -> list[Scan
     # market cap correctly still falls through to high_risk, which is
     # the right outcome for an actually obscure/tiny asset.
     from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
+    from opportunity_scanner.risk import classify_risk_tier
+
     market_caps, market_cap_ranks = {}, {}
     mcap_provider = CoinGeckoDiscoveryProvider()
     try:
-        lookup = await mcap_provider.get_market_cap_lookup(top_n=250)
+        overview = await mcap_provider.get_market_overview(top_n=250)
         for base in universe:
-            entry = lookup.get(base.upper())
-            if entry:
-                rank, cap = entry
-                if rank is not None:
-                    market_cap_ranks[base] = rank
-                if cap is not None:
-                    market_caps[base] = cap
+            row = overview.get(base.upper())
+            if row:
+                if row.get("market_cap_rank") is not None:
+                    market_cap_ranks[base] = row["market_cap_rank"]
+                if row.get("market_cap_usd") is not None:
+                    market_caps[base] = row["market_cap_usd"]
     finally:
         await mcap_provider.close()
+
+    # Real fix for a live report: the sidebar's risk tier filter only
+    # ever filtered already-computed RESULTS for display — the actual
+    # scan still processed the full universe regardless of what was
+    # selected, so narrowing to "core only" did nothing for scan time,
+    # which isn't obvious from the UI and is a reasonable thing to
+    # expect it to do. Pre-filtering the universe here, before the
+    # expensive per-coin scan work happens, using the SAME market cap
+    # data already fetched above (no extra cost), actually reduces the
+    # work for excluded tiers instead of just hiding them afterward.
+    if risk_filter and set(risk_filter) != {"core", "small_cap", "high_risk"}:
+        filtered_universe = []
+        for base in universe:
+            row = overview.get(base.upper(), {})
+            tier = classify_risk_tier(
+                market_cap_rank=row.get("market_cap_rank"),
+                market_cap_usd=row.get("market_cap_usd"),
+                volume_24h_usd=row.get("volume_24h_usd") or 0.0,
+            )
+            if tier in risk_filter:
+                filtered_universe.append(base)
+        universe = filtered_universe
 
     scanner = OpportunityScanner(
         config, whale_api_key=settings.whale_alert_api_key,
@@ -332,8 +355,8 @@ async def _run_scan_async(settings, mode: str, universe: list[str]) -> list[Scan
     return results
 
 
-def run_scan(settings, mode: str, universe: list[str]) -> list[ScanResult]:
-    return asyncio.run(_run_scan_async(settings, mode, universe))
+def run_scan(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> list[ScanResult]:
+    return asyncio.run(_run_scan_async(settings, mode, universe, risk_filter))
 
 
 def discover_trending_universe_with_overview(max_size: int = 25) -> tuple:
@@ -595,7 +618,8 @@ if scan_clicked:
     else:
         with st.spinner("Scanning…"):
             try:
-                results = run_scan(_settings, st.session_state.mode, active_universe)
+                _risk_filter = st.session_state.get("risk_filter_select", ["core", "small_cap", "high_risk"])
+                results = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)
                 if _recheck.max_results_shown is not None:
                     results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
                 st.session_state.results = results
@@ -646,7 +670,7 @@ with right:
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="mono-label">Filters</div>', unsafe_allow_html=True)
     min_score_filter = st.slider("Min score", 0, 100, 0)
-    risk_filter = st.multiselect("Risk tier", ["core", "small_cap", "high_risk"], default=["core", "small_cap", "high_risk"])
+    risk_filter = st.multiselect("Risk tier", ["core", "small_cap", "high_risk"], default=["core", "small_cap", "high_risk"], key="risk_filter_select")
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="mono-label">Signal count</div>', unsafe_allow_html=True)
