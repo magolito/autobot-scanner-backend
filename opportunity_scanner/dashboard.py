@@ -55,6 +55,7 @@ from opportunity_scanner.storage import ScanStorage
 from opportunity_scanner.models import ScanResult, FactorResult
 from opportunity_scanner.smart_view import Bucket, bucket_results, BUCKET_LABELS, data_completeness
 from opportunity_scanner.readiness import classify_readiness
+from opportunity_scanner.track_record import compute_track_record
 
 # ----------------------------------------------------------------- page setup
 
@@ -336,6 +337,17 @@ async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter:
     # data already fetched above (no extra cost), actually reduces the
     # work for excluded tiers instead of just hiding them afterward.
     if risk_filter and set(risk_filter) != {"core", "small_cap", "high_risk"}:
+        # No realized_volatility_annualized here deliberately — this runs
+        # BEFORE any OHLCV is fetched, so it's a coarse, rank-based cut
+        # purely to save scan work for excluded tiers. The FINAL,
+        # authoritative tier shown to the user (scanner.py's call, after
+        # OHLCV exists) also weighs liquidity and volatility and can be
+        # stricter than this pre-filter — a coin that passes this coarse
+        # cut but turns out to be abnormally volatile will still get
+        # correctly downgraded for display, it just wasn't excluded from
+        # being scanned in the first place. That's an acceptable, minor
+        # asymmetry (worth being scanned generously beats being wrongly
+        # excluded), not a correctness bug.
         filtered_universe = []
         for base in universe:
             row = overview.get(base.upper(), {})
@@ -753,6 +765,44 @@ def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _warn_if_correlated(results: list[ScanResult]):
+    """
+    The direct answer to "if five 'Ready'/high-conviction signals are
+    all just following BTC, that's one bet expressed five times, not
+    five independent opportunities." Checks only WITHIN the given list
+    (e.g. Super Strong + Strong combined) — correlation with a coin
+    that isn't even in the prominent buckets doesn't matter here, only
+    correlation between coins the person is actually being pointed at
+    as high-conviction ideas.
+    """
+    bases_in_scope = {r.base for r in results}
+    correlated_groups: dict[str, set[str]] = {}
+    for r in results:
+        peers_in_scope = [p for p in r.correlated_peers if p in bases_in_scope]
+        if peers_in_scope:
+            group = correlated_groups.setdefault(r.base, set())
+            group.update(peers_in_scope)
+            group.add(r.base)
+    if not correlated_groups:
+        return
+    # Merge overlapping groups (if A-B and B-C are both flagged, treat as one A-B-C cluster)
+    merged: list[set[str]] = []
+    for group in correlated_groups.values():
+        for existing in merged:
+            if existing & group:
+                existing.update(group)
+                break
+        else:
+            merged.append(set(group))
+    largest = max(merged, key=len)
+    if len(largest) >= 2:
+        st.warning(
+            f"🔗 {len(largest)} of these signals ({', '.join(sorted(largest))}) are highly correlated with "
+            f"each other — this likely reflects one underlying move (probably BTC-driven), not {len(largest)} "
+            f"independent opportunities. Worth sizing accordingly."
+        )
+
+
 def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_color: str = "gray"):
     """
     score_bar_color is set deterministically PER BUCKET by the caller,
@@ -822,6 +872,7 @@ with left:
     else:
         smart_config = _settings.to_scanner_config().smart_view
         buckets = bucket_results(display_results, smart_config)
+        _warn_if_correlated(buckets[Bucket.SUPER_STRONG] + buckets[Bucket.STRONG])
 
         # Super Strong and Strong are the prominent, always-open sections —
         # this is what "make Super Strong and Strong most prominent" means
@@ -885,6 +936,12 @@ def show_detail(result: ScanResult):
         st.markdown(signal_badge_html(result.signal), unsafe_allow_html=True)
         st.markdown(f'<div style="margin-top:8px;font-family:DM Mono,monospace;font-size:12px;color:#8c8c89">Confidence: {result.confidence:.0f} ({result.confidence_label})</div>', unsafe_allow_html=True)
         st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:12px;color:#8c8c89">Risk tier: {result.risk_tier}</div>', unsafe_allow_html=True)
+        if result.correlated_peers:
+            st.markdown(
+                f'<div style="font-family:DM Mono,monospace;font-size:12px;color:#fbbf24;margin-top:4px">'
+                f'🔗 Correlated with: {", ".join(result.correlated_peers)} — likely the same underlying move, not an independent signal</div>',
+                unsafe_allow_html=True,
+            )
 
     with top2:
         st.markdown(f'<div class="section-h">{result.base}</div>', unsafe_allow_html=True)
@@ -1004,3 +1061,26 @@ with bottom_r:
             st.markdown(f'<div class="metric-card"><div class="metric-label">Avg forward return</div><div class="metric-value">{bt["avg_forward_return_pct"]:+.1f}%</div></div>', unsafe_allow_html=True)
         with m2:
             st.markdown(f'<div class="metric-card"><div class="metric-label">Win rate</div><div class="metric-value">{bt["win_rate_pct"]:.0f}% ({bt["sample_size"]} signals)</div></div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-h" style="margin-top:24px">Readiness Track Record (90d)</div>', unsafe_allow_html=True)
+    st.caption(
+        "How \'Ready\' calls have actually played out — the real answer to \'does this signal mean anything.\' "
+        "Tracking started when this feature shipped; it builds up honestly from here, not backfilled against "
+        "older history that was never classified this way."
+    )
+    try:
+        tr = compute_track_record(_storage.db_path, lookback_days=90, min_hours_since_signal=24.0)
+    except Exception:  # noqa: BLE001
+        tr = None
+    if tr is None or tr.total_signals == 0:
+        st.caption("No \'Ready\' signals at least 24h old yet — check back as scan history accumulates.")
+    else:
+        tm1, tm2, tm3 = st.columns(3)
+        with tm1:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">Win rate</div><div class="metric-value">{tr.win_rate_pct:.0f}%</div></div>' if tr.win_rate_pct is not None else '<div class="metric-card"><div class="metric-label">Win rate</div><div class="metric-value">—</div></div>', unsafe_allow_html=True)
+        with tm2:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">Avg return</div><div class="metric-value">{tr.avg_return_pct:+.1f}%</div></div>' if tr.avg_return_pct is not None else '<div class="metric-card"><div class="metric-label">Avg return</div><div class="metric-value">—</div></div>', unsafe_allow_html=True)
+        with tm3:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">Signals</div><div class="metric-value">{tr.resolved_signals} resolved</div></div>', unsafe_allow_html=True)
+        if tr.unresolved_signals:
+            st.caption(f"{tr.unresolved_signals} more Ready signal(s) too recent to have a later price yet — not counted either way.")

@@ -20,11 +20,12 @@ import asyncio
 import json
 import sqlite3
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
 from .models import ScanResult, FactorResult
+from .readiness import classify_readiness
 
 DEFAULT_DB_PATH = "opportunity_scanner.db"
 
@@ -45,7 +46,9 @@ CREATE TABLE IF NOT EXISTS scan_results (
     momentum_score REAL,
     social_score REAL,
     weights_used_json TEXT NOT NULL,
-    reasons_summary_json TEXT NOT NULL
+    reasons_summary_json TEXT NOT NULL,
+    readiness_label TEXT,
+    readiness_direction TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_scan_results_base_time ON scan_results(base, scanned_at);
 CREATE INDEX IF NOT EXISTS idx_scan_results_signal ON scan_results(signal, scanned_at);
@@ -70,8 +73,24 @@ class ScanStorage:
         try:
             conn.executescript(SCHEMA)
             conn.commit()
+            self._migrate_add_column(conn, "scan_results", "readiness_label", "TEXT")
+            self._migrate_add_column(conn, "scan_results", "readiness_direction", "TEXT")
+            conn.commit()
         finally:
             conn.close()
+
+    @staticmethod
+    def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, column_def: str):
+        """
+        Safe, idempotent column addition — same pattern as
+        AppStorage._migrate_add_column. This matters concretely here
+        too: there's a live deployment with real scan history already in
+        this exact database file, and CREATE TABLE IF NOT EXISTS doesn't
+        retroactively add columns to a table that already exists.
+        """
+        existing_columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -84,14 +103,16 @@ class ScanStorage:
         conn = self._connect()
         try:
             factor_scores = {name: f.score for name, f in result.factors.items()}
+            readiness = classify_readiness(result)
             conn.execute(
                 """
                 INSERT INTO scan_results (
                     scanned_at, base, symbol, price, composite_score, confidence,
                     confidence_label, signal, risk_tier, strength_score,
                     oi_dynamics_score, momentum_score, social_score,
-                    weights_used_json, reasons_summary_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    weights_used_json, reasons_summary_json,
+                    readiness_label, readiness_direction
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     datetime.now(timezone.utc).isoformat(),
@@ -102,6 +123,7 @@ class ScanStorage:
                     factor_scores.get("momentum"), factor_scores.get("social"),
                     json.dumps(result.weights_used),
                     json.dumps(result.reasons_summary),
+                    readiness["label"], readiness["direction"],
                 ),
             )
             conn.commit()
@@ -265,19 +287,29 @@ class ScanStorage:
 
     # ---------------------------------------------------------------- backtesting
 
-    def _backtest_signal_sync(self, signal: str, lookback_days: int) -> dict:
+    def _backtest_signal_sync(self, signal: str, lookback_days: int, min_hours_since_signal: float = 24.0) -> dict:
         """
         Rough backtest: for every time a coin FIRST entered `signal` (e.g.
         "Strong Buy") within the lookback window, what was its price then
         vs. its most recent recorded price? This is intentionally simple
-        (no position sizing, no fees, no slippage) — it's a sanity check
+        (no position sizing, no fees, no slippage) -- it's a sanity check
         on whether the scoring model's calls have directionally been
         right, not a trading backtest.
+
+        min_hours_since_signal is a real fix found while building the
+        readiness track record (track_record.py): this previously had NO
+        age filtering at all, meaning a signal that fired 5 minutes ago
+        got backtested against essentially its own entry price (~0%
+        return either way), diluting the win rate/avg return with noise
+        from signals that hadn't had any real time to play out. Signals
+        younger than this are correctly excluded, not counted as either
+        a win or a loss.
         """
         conn = self._connect()
         try:
             since = (datetime.now(timezone.utc).timestamp() - lookback_days * 86400)
             since_iso = datetime.fromtimestamp(since, tz=timezone.utc).isoformat()
+            age_cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=min_hours_since_signal)).isoformat()
             rows = conn.execute(
                 """
                 SELECT base, signal, price, scanned_at,
@@ -291,7 +323,7 @@ class ScanStorage:
 
             entries = [
                 dict(r) for r in rows
-                if r["signal"] == signal and r["prev_signal"] != signal
+                if r["signal"] == signal and r["prev_signal"] != signal and r["scanned_at"] <= age_cutoff_iso
             ]
 
             results = []
@@ -323,8 +355,8 @@ class ScanStorage:
         finally:
             conn.close()
 
-    async def backtest_signal(self, signal: str, lookback_days: int = 30) -> dict:
-        return await asyncio.to_thread(self._backtest_signal_sync, signal, lookback_days)
+    async def backtest_signal(self, signal: str, lookback_days: int = 30, min_hours_since_signal: float = 24.0) -> dict:
+        return await asyncio.to_thread(self._backtest_signal_sync, signal, lookback_days, min_hours_since_signal)
 
-    def backtest_signal_sync(self, signal: str, lookback_days: int = 30) -> dict:
-        return self._backtest_signal_sync(signal, lookback_days)
+    def backtest_signal_sync(self, signal: str, lookback_days: int = 30, min_hours_since_signal: float = 24.0) -> dict:
+        return self._backtest_signal_sync(signal, lookback_days, min_hours_since_signal)
