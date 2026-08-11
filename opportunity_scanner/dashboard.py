@@ -82,12 +82,19 @@ CSS = """
     --amber: #fbbf24;
     --red: #f87171;
     --gold: rgba(180,155,100,0.6);
+    --radius: 12px;
+    --radius-sm: 8px;
+    --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.24), 0 0 0 1px rgba(255,255,255,0.03) inset;
 }
 
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.block-container { padding-top: 2rem !important; }
 .stApp {
     background: var(--bg);
-    background-image: radial-gradient(ellipse at 15% 0%, rgba(180,155,100,0.04) 0%, transparent 50%);
+    background-image:
+        radial-gradient(ellipse at 15% 0%, rgba(180,155,100,0.05) 0%, transparent 50%),
+        repeating-linear-gradient(115deg, rgba(245,244,240,0.015) 0px, rgba(245,244,240,0.015) 1px, transparent 1px, transparent 120px),
+        repeating-linear-gradient(25deg, rgba(245,244,240,0.012) 0px, rgba(245,244,240,0.012) 1px, transparent 1px, transparent 140px);
     color: var(--white);
 }
 #MainMenu, footer, header {visibility: hidden;}
@@ -104,7 +111,8 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .live-dot.stale { background: var(--gray); }
 
 /* Mono labels */
-.mono-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--gray); margin-bottom: 10px; }
+.mono-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--gray); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+.mono-label::before { content: '▸'; color: var(--gold); font-size: 8px; }
 
 /* Signal badges */
 .sig-badge { font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.05em; padding: 3px 9px; border-radius: 3px; white-space: nowrap; }
@@ -125,19 +133,30 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .pillar-fill { height: 100%; border-radius: 3px; }
 
 /* Metric cards */
-.metric-card { background: rgba(245,244,240,0.03); border: 1px solid var(--border); padding: 16px 18px; }
+.metric-card {
+    background: rgba(245,244,240,0.03); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px 18px;
+    box-shadow: var(--shadow-card);
+    transition: border-color 0.15s ease, transform 0.15s ease;
+    position: relative; overflow: hidden;
+}
+.metric-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, var(--gold) 0%, transparent 70%); opacity: 0.5;
+}
+.metric-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
 .metric-card .metric-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray); margin-bottom: 6px; }
 .metric-card .metric-value { font-family: 'DM Mono', monospace; font-size: 16px; color: var(--white); }
 
 /* Flags */
-.flag-row { display: flex; gap: 10px; padding: 10px 14px; margin-bottom: 6px; border-left: 3px solid var(--border-strong); font-size: 13px; }
+.flag-row { display: flex; gap: 10px; padding: 10px 14px; margin-bottom: 6px; border-left: 3px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 13px; }
 .flag-danger { border-left-color: var(--red); background: rgba(248,113,113,0.06); color: #ffb4b4; }
 .flag-warning { border-left-color: var(--amber); background: rgba(251,191,36,0.06); color: #ffd98a; }
 .flag-info { border-left-color: var(--gray); background: rgba(245,244,240,0.03); color: var(--gray-mid); }
 .flag-positive { border-left-color: var(--green); background: rgba(74,222,128,0.06); color: #a7f3d0; }
 
 /* Thesis box */
-.thesis-box { background: rgba(245,244,240,0.03); border-left: 2px solid var(--gold); padding: 16px 20px; font-size: 14px; color: var(--gray-mid); line-height: 1.7; }
+.thesis-box { background: rgba(245,244,240,0.03); border-left: 2px solid var(--gold); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 16px 20px; font-size: 14px; color: var(--gray-mid); line-height: 1.7; }
 
 /* Alert feed rows */
 .alert-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -150,11 +169,11 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 hr { border-color: var(--border); }
 
 /* Login gate */
-.login-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 70vh; text-align: center; }
-.login-logo { font-family: 'DM Sans', sans-serif; font-weight: 500; font-size: 15px; color: var(--white); display: flex; align-items: center; gap: 8px; margin-bottom: 28px; }
+.login-wrap { display: flex; flex-direction: column; align-items: center; text-align: center; margin-top: 4vh; }
+.login-logo { font-family: 'DM Sans', sans-serif; font-weight: 500; font-size: 15px; color: var(--white); display: flex; align-items: center; gap: 8px; margin-bottom: 20px; }
 .login-logo::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--gold); }
-.login-title { font-family: 'Playfair Display', serif; font-size: 40px; color: var(--white); margin-bottom: 10px; }
-.login-sub { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray); margin-bottom: 36px; }
+.login-title { font-family: 'Playfair Display', serif; font-size: 36px; color: var(--white); margin-bottom: 8px; }
+.login-sub { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray); margin-bottom: 24px; }
 
 /* Fatal error page */
 .error-page { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 65vh; text-align: center; padding: 0 24px; }
@@ -373,6 +392,57 @@ async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter:
     finally:
         await scanner.close()
     return results
+
+
+def _scan_loading_html(label: str = "Scanning") -> str:
+    """
+    Real, working port of the pixel-grid loading animation — the visual
+    effect from the shared React reference, rebuilt in vanilla HTML/CSS/
+    JS since Streamlit can't execute JSX directly, but can render
+    genuine HTML/CSS/JS via st.html (unsafe_allow_javascript=True for
+    the live timer). Same chevron wavefront delay
+    pattern, same shimmer-text sweep, same live elapsed timer — just not
+    React underneath. Colors are hardcoded to match this app's actual
+    palette rather than relying on CSS custom properties — st.html
+    doesn't guarantee the same :root-variable inheritance behavior a
+    developer might assume from regular page content, so hardcoding is
+    the safer bet for guaranteed-correct colors here.
+    """
+    # (c + abs(r-1)) * 90 for a 3x3 grid, r=i//3, c=i%3 — same chevron
+    # wavefront formula as the reference, giving a diagonal sweep rather
+    # than a uniform pulse.
+    delays = [90, 180, 270, 0, 90, 180, 90, 180, 270]
+    cells = "".join(f'<span style="animation-delay:{d}ms"></span>' for d in delays)
+    return f"""
+    <div style="background:transparent;display:flex;align-items:center;gap:10px;
+                font-family:'DM Sans',sans-serif;padding:4px 0;">
+      <span style="display:grid;grid-template-columns:repeat(3,4px);gap:1.5px;">
+        {cells}
+      </span>
+      <span id="shimmer-label" style="font-size:13px;font-weight:500;
+            background-image:linear-gradient(90deg,#8c8c89 35%,#f5f4f0 50%,#8c8c89 65%);
+            background-size:200% 100%;-webkit-background-clip:text;background-clip:text;
+            color:transparent;animation:shimmer-text 1.4s linear infinite;">{label}</span>
+      <span id="elapsed-timer" style="font-family:'DM Mono',monospace;font-size:12px;color:#8c8c89;">0.0s</span>
+    </div>
+    <style>
+      body {{ margin:0; background:transparent; }}
+      span[style*="animation-delay"] {{
+        width:4px; height:4px; border-radius:1px; background:#f5f4f0; opacity:0.15;
+        display:inline-block; animation:pixel-on 650ms ease-in-out infinite;
+      }}
+      @keyframes pixel-on {{ 0%,100% {{ opacity:0.15; }} 50% {{ opacity:0.9; }} }}
+      @keyframes shimmer-text {{ 0% {{ background-position:200% 0; }} 100% {{ background-position:-200% 0; }} }}
+    </style>
+    <script>
+      let start = Date.now();
+      setInterval(() => {{
+        const s = (Date.now() - start) / 1000;
+        const el = document.getElementById('elapsed-timer');
+        if (el) el.textContent = s < 60 ? s.toFixed(1) + 's' : Math.floor(s/60) + 'm ' + (s%60).toFixed(1) + 's';
+      }}, 100);
+    </script>
+    """
 
 
 def run_scan(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> list[ScanResult]:
@@ -636,18 +706,22 @@ if scan_clicked:
     if not _recheck.allowed:
         st.error(_recheck.reason)
     else:
-        with st.spinner("Scanning…"):
-            try:
-                _risk_filter = st.session_state.get("risk_filter_select", ["core", "small_cap", "high_risk"])
-                results = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)
-                if _recheck.max_results_shown is not None:
-                    results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
-                st.session_state.results = results
-                st.session_state.last_scan_time = datetime.now(timezone.utc)
-                _storage.save_scan_results_sync(results)
-                record_scan(_user, "opportunity", _app_storage)
-            except Exception as e:  # noqa: BLE001
-                st.error(f"Scan failed: {e}")
+        loading_placeholder = st.empty()
+        with loading_placeholder.container():
+            st.html(_scan_loading_html("Scanning"), unsafe_allow_javascript=True)
+        try:
+            _risk_filter = st.session_state.get("risk_filter_select", ["core", "small_cap", "high_risk"])
+            results = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)
+            if _recheck.max_results_shown is not None:
+                results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
+            st.session_state.results = results
+            st.session_state.last_scan_time = datetime.now(timezone.utc)
+            _storage.save_scan_results_sync(results)
+            record_scan(_user, "opportunity", _app_storage)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"Scan failed: {e}")
+        finally:
+            loading_placeholder.empty()
 
 remaining_display = "unlimited" if _access.scans_remaining_today is None else str(_access.scans_remaining_today)
 if not _access.allowed:
@@ -919,7 +993,8 @@ def show_detail(result: ScanResult):
     readiness = classify_readiness(result)
     readiness_color = {"Ready": "#4ade80", "Caution": "#fbbf24", "Building": "#8c8c89"}.get(readiness["label"], "#8c8c89")
     st.markdown(
-        f'<div style="background:rgba(255,255,255,0.03);border:1px solid {readiness_color}40;border-radius:8px;'
+        f'<div style="background:rgba(255,255,255,0.03);border:1px solid {readiness_color}40;border-radius:12px;'
+        f'box-shadow:0 1px 2px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.24);'
         f'padding:12px 16px;margin-bottom:16px">'
         f'<div style="font-family:DM Mono,monospace;font-size:15px;font-weight:600;color:{readiness_color}">'
         f'{READINESS_INDICATOR.get(readiness["label"], "🔧")} {readiness["label"]}'
