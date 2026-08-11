@@ -9,6 +9,7 @@ you actually call to run a scan.
 
 from __future__ import annotations
 import asyncio
+from types import SimpleNamespace
 from typing import List, Optional
 
 from .config import ScannerConfig
@@ -87,12 +88,19 @@ class OpportunityScanner:
         sector_bases = self.config.sector_peers(base)
         sector_snapshots = {}
         if sector_bases:
-            peer_snaps = await asyncio.gather(
-                *[self.exchange_source.build_snapshot(base=peer) for peer in sector_bases],
+            # Lightweight peer fetch — see fetch_ohlcv_for_relative_strength's
+            # docstring for the full reasoning. _relative_strength() only
+            # ever reads peer_snap.ohlcv.get(tf), so a plain namespace with
+            # just that attribute is all it needs — no reason to build or
+            # fake a full MarketSnapshot for data that's never read.
+            peer_ohlcv_results = await asyncio.gather(
+                *[self.exchange_source.fetch_ohlcv_for_relative_strength(peer) for peer in sector_bases],
                 return_exceptions=True,
             )
             sector_snapshots = {
-                peer: s for peer, s in zip(sector_bases, peer_snaps) if not isinstance(s, Exception)
+                peer: SimpleNamespace(ohlcv=ohlcv)
+                for peer, ohlcv in zip(sector_bases, peer_ohlcv_results)
+                if not isinstance(ohlcv, Exception)
             }
 
         factors = {

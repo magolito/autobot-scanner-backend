@@ -94,6 +94,7 @@ class ExchangeDataSource:
         # start_scan_cycle() for the duration of a scan_many() batch, see
         # build_snapshot's docstring for why this exists.
         self._scan_cycle_tasks: Optional[Dict[str, "asyncio.Task"]] = None
+        self._scan_cycle_peer_ohlcv_tasks: Optional[Dict[str, "asyncio.Task"]] = None
         self._hyperliquid_markets_loaded = False
 
     async def close(self):
@@ -458,6 +459,50 @@ class ExchangeDataSource:
             return await self._scan_cycle_tasks[base]
         return await self._build_snapshot_uncached(base, quote, market_cap_usd, exchange_listings)
 
+    async def fetch_ohlcv_for_relative_strength(self, base: str, quote: Optional[str] = None) -> Dict[str, pd.DataFrame]:
+        """
+        Lightweight peer-data fetch — the real fix for a live-measured,
+        precisely reproducible ~20-second gap in real scan logs, right
+        around sector-peer coins outside the active scan universe (e.g.
+        scanning LINK pulls in its whole "defi" sector — UNI, AAVE, MKR,
+        CRV, LDO — purely to compute relative strength, even when none
+        of those peers were selected by the user at all).
+
+        strength.py's _relative_strength() ONLY ever reads
+        peer_snap.ohlcv.get(tf) for tf in ("1h", "4h", "1d") — never
+        15m, never price, never OI, never funding, never long/short.
+        But every peer used to get build_snapshot()'s FULL fetch anyway
+        (price + all 4 OHLCV timeframes + OI + funding + long/short —
+        7+ real network calls), most of it fetched then silently
+        discarded, unused, for every single peer coin not already in
+        the active universe. This fetches exactly the 3 timeframes
+        actually used, with a small candle limit (relative strength
+        only needs a handful of recent candles for a short-lookback
+        return, not the 200+ a primary coin needs for EMA/RSI), and
+        nothing else — cutting peer-fetch cost roughly in half or more.
+
+        Memoized separately from build_snapshot's cache (different
+        result shape, same asyncio.Task-based dedup principle) so
+        multiple coins sharing the same sector peer still only trigger
+        one real fetch per peer per scan cycle, not one per referencing
+        coin.
+        """
+        RELATIVE_STRENGTH_TIMEFRAMES = ["1h", "4h", "1d"]  # matches strength.py's _TF_PERIODS exactly
+
+        async def _fetch_uncached() -> Dict[str, pd.DataFrame]:
+            symbol = f"{base}/{quote or self.config.quote_currency}"
+            results = await asyncio.gather(
+                *[self._fetch_ohlcv(symbol, tf, limit=10) for tf in RELATIVE_STRENGTH_TIMEFRAMES],
+                return_exceptions=True,
+            )
+            return {tf: df for tf, df in zip(RELATIVE_STRENGTH_TIMEFRAMES, results) if isinstance(df, pd.DataFrame)}
+
+        if self._scan_cycle_peer_ohlcv_tasks is not None:
+            if base not in self._scan_cycle_peer_ohlcv_tasks:
+                self._scan_cycle_peer_ohlcv_tasks[base] = asyncio.ensure_future(_fetch_uncached())
+            return await self._scan_cycle_peer_ohlcv_tasks[base]
+        return await _fetch_uncached()
+
     async def ensure_markets_loaded(self):
         """
         Real fix for a confirmed live bug: "hyperliquid markets not
@@ -486,12 +531,14 @@ class ExchangeDataSource:
         """Call once at the start of a scan_many() batch — activates
         memoization for its duration."""
         self._scan_cycle_tasks = {}
+        self._scan_cycle_peer_ohlcv_tasks = {}
 
     def end_scan_cycle(self):
         """Call once the batch finishes — subsequent calls to
         build_snapshot go back to always fetching fresh, correct for
         one-off calls outside a batch scan."""
         self._scan_cycle_tasks = None
+        self._scan_cycle_peer_ohlcv_tasks = None
 
     async def _build_snapshot_uncached(
         self,
