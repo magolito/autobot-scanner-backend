@@ -491,6 +491,7 @@ class Settings(BaseSettings):
     lunarcrush_api_key: Optional[str] = None
     whale_alert_api_key: Optional[str] = None
     coinglass_api_key: Optional[str] = None
+    coingecko_api_key: Optional[str] = None
     telegram_bot_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     discord_webhook_url: Optional[str] = None
@@ -669,6 +670,7 @@ class Settings(BaseSettings):
             quote_currency=self.exchange.quote_currency,
             market_data_priority=list(self.exchange.market_data_priority),
             lunarcrush_api_key=self.lunarcrush_api_key,
+            coingecko_api_key=self.coingecko_api_key,
             smart_view=SmartViewConfig(
                 enabled=self.smart_view.enabled,
                 super_strong=BucketThresholds(**self.smart_view.super_strong.model_dump()),

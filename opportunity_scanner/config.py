@@ -276,6 +276,13 @@ class ScannerConfig:
     # LunarCrush (social pillar) — see data_sources/social.py
     lunarcrush_api_key: str | None = None
 
+    # CoinGecko (market cap classification, OI derivatives fallback, live
+    # discovery) — free "Demo" tier key, not a paid Pro key. See
+    # data_sources/coingecko_discovery.py's constructor docstring for why
+    # this matters: anonymous requests were observed getting 403'd
+    # entirely, not just rate-limited.
+    coingecko_api_key: str | None = None
+
     def sector_of(self, base: str) -> Optional[str]:
         base = base.upper()
         for sector, coins in self.sector_map.items():

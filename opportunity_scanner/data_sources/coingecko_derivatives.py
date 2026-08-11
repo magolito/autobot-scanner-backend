@@ -35,8 +35,12 @@ class CoinGeckoDerivativesSnapshot(BaseModel):
 
 
 class CoinGeckoDerivativesProvider:
-    def __init__(self, cache_ttl_seconds: float = 60, failure_threshold: int = 4, cooldown_seconds: float = 120):
-        self._http = httpx.AsyncClient(base_url=COINGECKO_BASE_URL, timeout=15.0)
+    def __init__(self, api_key: Optional[str] = None, cache_ttl_seconds: float = 60, failure_threshold: int = 4, cooldown_seconds: float = 120):
+        self._http = httpx.AsyncClient(
+            base_url=COINGECKO_BASE_URL,
+            headers={"x-cg-demo-api-key": api_key} if api_key else {},
+            timeout=15.0,
+        )
         self._breaker = breakers.get("coingecko_derivatives", failure_threshold=failure_threshold, cooldown_seconds=cooldown_seconds)
         self.cache_ttl_seconds = cache_ttl_seconds
 

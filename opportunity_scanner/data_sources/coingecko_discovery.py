@@ -65,9 +65,25 @@ def _parse_market_row(row: dict) -> dict:
 
 
 class CoinGeckoDiscoveryProvider:
-    def __init__(self, failure_threshold: int = 4, cooldown_seconds: float = 120):
-        self._http = httpx.AsyncClient(base_url=COINGECKO_BASE_URL, timeout=15.0)
+    def __init__(self, api_key: Optional[str] = None, failure_threshold: int = 4, cooldown_seconds: float = 120):
+        # Real fix for a confirmed, live production issue: CoinGecko's
+        # fully anonymous (keyless) API is now heavily restricted and
+        # was observed returning 403 Forbidden on EVERY endpoint tested
+        # (not just one), most likely because unauthenticated requests
+        # from cloud/datacenter IPs get blocked more aggressively than
+        # authenticated ones. CoinGecko's free "Demo" tier (still
+        # genuinely free, no credit card, 10,000 calls/month) uses the
+        # x-cg-demo-api-key header — adding it here is the real fix,
+        # not a workaround, since it addresses why requests were being
+        # blocked in the first place rather than retrying around it.
+        self.api_key = api_key
+        self._http = httpx.AsyncClient(
+            base_url=COINGECKO_BASE_URL,
+            headers={"x-cg-demo-api-key": api_key} if api_key else {},
+            timeout=15.0,
+        )
         self._breaker = breakers.get("coingecko_discovery", failure_threshold=failure_threshold, cooldown_seconds=cooldown_seconds)
+        self._logged_missing_key = False
 
     async def close(self):
         await self._http.aclose()
@@ -157,6 +173,14 @@ class CoinGeckoDiscoveryProvider:
         whole class of bug rather than working around it.
         """
         async def fetch():
+            if not self.api_key and not self._logged_missing_key:
+                print(
+                    "[discovery] No COINGECKO_API_KEY configured — CoinGecko's anonymous API is heavily "
+                    "restricted and may return 403 Forbidden, especially from cloud/datacenter IPs. Get a "
+                    "free Demo key (no credit card) at https://www.coingecko.com/en/api/pricing and set "
+                    "COINGECKO_API_KEY to fix this."
+                )
+                self._logged_missing_key = True
             try:
                 data = await self._breaker.call(lambda: self._get_market_cap_lookup_raw(top_n))
             except (CircuitOpenError, Exception) as e:  # noqa: BLE001

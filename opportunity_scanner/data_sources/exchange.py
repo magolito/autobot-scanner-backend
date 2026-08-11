@@ -69,7 +69,7 @@ class ExchangeDataSource:
         # actual concurrency with a semaphore fixes what pacing a
         # sequence can't.
         self._hyperliquid_semaphore = asyncio.Semaphore(4)
-        self._coingecko = CoinGeckoDerivativesProvider()
+        self._coingecko = CoinGeckoDerivativesProvider(api_key=getattr(config, "coingecko_api_key", None))
         self._us_spot = USSpotProvider()
         self._http = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
 

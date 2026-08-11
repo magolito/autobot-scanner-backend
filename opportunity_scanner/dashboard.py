@@ -346,7 +346,7 @@ async def _run_scan_async(settings, mode: str, universe: list[str]) -> list[Scan
     from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
 
     market_caps, market_cap_ranks = {}, {}
-    mcap_provider = CoinGeckoDiscoveryProvider()
+    mcap_provider = CoinGeckoDiscoveryProvider(api_key=settings.coingecko_api_key)
     try:
         overview = await mcap_provider.get_market_overview(top_n=250)
         for base in universe:
@@ -429,7 +429,7 @@ def run_scan(settings, mode: str, universe: list[str]) -> list[ScanResult]:
     return asyncio.run(_run_scan_async(settings, mode, universe))
 
 
-def discover_trending_universe_with_overview(max_size: int = 25) -> tuple:
+def discover_trending_universe_with_overview(max_size: int = 25, api_key: str | None = None) -> tuple:
     """
     The actual fix for "the scanner only knows coins I hardcoded" — live
     discovery via CoinGecko's trending-search + top-volume rankings,
@@ -443,7 +443,7 @@ def discover_trending_universe_with_overview(max_size: int = 25) -> tuple:
     from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
 
     async def _discover():
-        provider = CoinGeckoDiscoveryProvider()
+        provider = CoinGeckoDiscoveryProvider(api_key=api_key)
         try:
             return await provider.discover_universe_with_overview(max_size=max_size)
         finally:
@@ -621,7 +621,7 @@ with top_r:
 if st.session_state.universe_preset == "🔥 Trending Now":
     if "trending_universe_cache" not in st.session_state:
         with st.spinner("Discovering trending + high-volume coins..."):
-            discovered, overview = discover_trending_universe_with_overview(max_size=25)
+            discovered, overview = discover_trending_universe_with_overview(max_size=25, api_key=_settings.coingecko_api_key)
         st.session_state.trending_universe_cache = discovered
         st.session_state.trending_overview_cache = overview
     active_universe = st.session_state.trending_universe_cache
@@ -676,7 +676,10 @@ elif st.session_state.universe_preset == "Custom":
     active_universe = [s.strip().upper() for s in custom_universe_input.split(",") if s.strip()]
 else:
     active_universe = UNIVERSE_PRESETS[st.session_state.universe_preset]
-    st.caption(f"{st.session_state.universe_preset}: {', '.join(active_universe)}")
+    st.caption(
+        f"{st.session_state.universe_preset} — {len(active_universe)} coins",
+        help=", ".join(active_universe),
+    )
 
 if scan_clicked:
     # Re-verify right at the point of action rather than trusting the
@@ -739,8 +742,21 @@ with right:
         r0 = st.session_state.results[0]
         regime_color = {"Risk-On": "#4ade80", "Neutral": "#8c8c89", "Risk-Off": "#f87171"}.get(r0.regime_label, "#8c8c89")
         st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:13px;color:{regime_color}">{r0.regime_label} ({r0.regime_score if r0.regime_score is not None else "—"})</div>', unsafe_allow_html=True)
+        # Real explanation of what this is actually doing, not just a
+        # label — this reads BTC's own health (momentum + volatility)
+        # once per scan, since most alts trade as beta on BTC. A
+        # "Strong Buy" on an alt while BTC is breaking down is more
+        # often a relief bounce than real strength.
+        regime_explain = {
+            "Risk-On": "BTC is healthy — bullish alt scores are taken at face value, no adjustment applied.",
+            "Neutral": "BTC is neither clearly healthy nor unhealthy — no adjustment applied to other coins' scores.",
+            "Risk-Off": "BTC looks unhealthy — bullish scores on other coins are being dampened, unless a coin shows genuine strength independent of BTC (see its detail view for a relative-strength note).",
+        }.get(r0.regime_label, "")
+        if regime_explain:
+            st.caption(regime_explain)
     else:
         st.markdown('<div style="font-family:DM Mono,monospace;font-size:13px;color:#8c8c89">No scan yet</div>', unsafe_allow_html=True)
+        st.caption("Reads BTC's own health once per scan — since most alts trade as beta on BTC, a bullish score elsewhere while BTC looks unhealthy gets extra scrutiny.")
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="mono-label">Pillar weights</div>', unsafe_allow_html=True)
