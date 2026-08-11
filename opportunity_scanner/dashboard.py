@@ -708,7 +708,19 @@ if scan_clicked:
     else:
         loading_placeholder = st.empty()
         with loading_placeholder.container():
-            st.html(_scan_loading_html("Scanning"), unsafe_allow_javascript=True)
+            # Defensive on purpose: requirements.txt pins streamlit>=1.37.0
+            # with no upper bound, so the actual deployed version could
+            # differ from what this was built against. st.html() is a
+            # fairly new API — if it's missing or raises for any reason,
+            # fall back to plain text rather than let a cosmetic loading
+            # animation ever be able to block the actual scan.
+            if hasattr(st, "html"):
+                try:
+                    st.html(_scan_loading_html("Scanning"), unsafe_allow_javascript=True)
+                except Exception:  # noqa: BLE001
+                    st.caption("⟳ Scanning…")
+            else:
+                st.caption("⟳ Scanning…")
         try:
             _risk_filter = st.session_state.get("risk_filter_select", ["core", "small_cap", "high_risk"])
             results = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)

@@ -12,5 +12,8 @@ redis>=5.0.0
 pydantic-settings>=2.5.0
 pyyaml>=6.0.0
 rich>=13.7.0
-streamlit>=1.37.0
+streamlit==1.61.1  # pinned, not >=, after a live report of a scan breaking in production — an open-ended
+                    # minimum meant Railway could install a different Streamlit version than what was
+                    # actually tested against locally. This is the exact version this app is verified
+                    # against; bump deliberately and re-test, not automatically on every deploy.
 stripe>=15.0.0
