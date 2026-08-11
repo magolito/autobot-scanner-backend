@@ -148,6 +148,16 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .metric-card .metric-label { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--gray); margin-bottom: 6px; }
 .metric-card .metric-value { font-family: 'DM Mono', monospace; font-size: 16px; color: var(--white); }
 
+/* Empty state cards — dashed border deliberately distinct from solid-border
+   metric cards, so "waiting for real data" reads differently from "here is
+   real data," at a glance, not just via text */
+.empty-state-card {
+    background: rgba(245,244,240,0.015); border: 1px dashed var(--border-strong);
+    border-radius: var(--radius); padding: 22px 20px; text-align: center;
+}
+.empty-state-icon { font-size: 18px; margin-bottom: 8px; opacity: 0.4; }
+.empty-state-text { font-family: 'DM Sans', sans-serif; font-size: 13px; color: var(--gray-mid); line-height: 1.6; max-width: 340px; margin: 0 auto; }
+
 /* Flags */
 .flag-row { display: flex; gap: 10px; padding: 10px 14px; margin-bottom: 6px; border-left: 3px solid var(--border-strong); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; font-size: 13px; }
 .flag-danger { border-left-color: var(--red); background: rgba(248,113,113,0.06); color: #ffb4b4; }
@@ -947,14 +957,23 @@ with left:
             if super_strong:
                 _render_result_table(super_strong, widget_key="bucket_super_strong", score_bar_color="green")
             else:
-                st.caption("No Super Strong setups this scan — this bucket is intentionally selective, an empty result here is normal, not an error.")
+                st.markdown(
+                    '<div class="empty-state-card"><div class="empty-state-icon">🔥</div>'
+                    '<div class="empty-state-text">No Super Strong setups this scan — this bucket is '
+                    'intentionally selective, an empty result here is normal, not an error.</div></div>',
+                    unsafe_allow_html=True,
+                )
 
             strong = buckets[Bucket.STRONG]
             st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
             if strong:
                 _render_result_table(strong, widget_key="bucket_strong", score_bar_color="green")
             else:
-                st.caption("No results in this bucket right now.")
+                st.markdown(
+                    '<div class="empty-state-card"><div class="empty-state-icon">—</div>'
+                    '<div class="empty-state-text">No results in this bucket right now.</div></div>',
+                    unsafe_allow_html=True,
+                )
 
             building = buckets[Bucket.BUILDING]
             if building:
@@ -1101,7 +1120,11 @@ with bottom_l:
     except Exception:  # noqa: BLE001
         alerts = []
     if not alerts:
-        st.caption("No signal changes or score jumps in the last 4 hours.")
+        st.markdown(
+            '<div class="empty-state-card"><div class="empty-state-icon">🔔</div>'
+            '<div class="empty-state-text">No signal changes or score jumps in the last 4 hours.</div></div>',
+            unsafe_allow_html=True,
+        )
     else:
         for a in alerts:
             st.markdown(f"""
@@ -1118,7 +1141,12 @@ with bottom_r:
     except Exception:  # noqa: BLE001
         bt = {"sample_size": 0}
     if bt.get("sample_size", 0) == 0:
-        st.caption("Not enough scan history yet to backtest — needs the scheduler running for a while first.")
+        st.markdown(
+            '<div class="empty-state-card"><div class="empty-state-icon">⏳</div>'
+            '<div class="empty-state-text">Not enough scan history yet to backtest — needs the scheduler '
+            'running for a while first.</div></div>',
+            unsafe_allow_html=True,
+        )
     else:
         m1, m2 = st.columns(2)
         with m1:
@@ -1137,7 +1165,12 @@ with bottom_r:
     except Exception:  # noqa: BLE001
         tr = None
     if tr is None or tr.total_signals == 0:
-        st.caption("No \'Ready\' signals at least 24h old yet — check back as scan history accumulates.")
+        st.markdown(
+            '<div class="empty-state-card"><div class="empty-state-icon">🎯</div>'
+            '<div class="empty-state-text">No \'Ready\' signals at least 24h old yet — check back as scan '
+            'history accumulates.</div></div>',
+            unsafe_allow_html=True,
+        )
     else:
         tm1, tm2, tm3 = st.columns(3)
         with tm1:
