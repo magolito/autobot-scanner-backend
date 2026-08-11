@@ -315,7 +315,7 @@ def derive_display_flags(result: ScanResult) -> list[dict]:
     return flags
 
 
-async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> list[ScanResult]:
+async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> tuple[list[ScanResult], str | None]:
     config = settings.to_scanner_config()
     config.timeframe_config.timeframe_weights = dict(MODE_TIMEFRAME_WEIGHTS[mode])
 
@@ -355,29 +355,40 @@ async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter:
     # expensive per-coin scan work happens, using the SAME market cap
     # data already fetched above (no extra cost), actually reduces the
     # work for excluded tiers instead of just hiding them afterward.
+    #
+    # THE ACTUAL BUG, found from a live report: if the market cap fetch
+    # fails entirely (network issue, CoinGecko rate limit, anything),
+    # `overview` comes back completely empty — every coin then gets
+    # classified "high_risk" (classify_risk_tier's correct, honest
+    # default when there's no data), and with the default "core only"
+    # filter, EVERY coin gets excluded before the scan even starts.
+    # scan_many([]) correctly returns [] almost instantly — no error,
+    # no results, and nothing telling the user why. The exact same
+    # class of bug already fixed elsewhere this session (a filter
+    # failing toward "exclude everything" instead of "we can't verify,
+    # so don't block"), just newly introduced here. Fixed by treating a
+    # COMPLETELY empty overview as "couldn't verify risk data" and
+    # falling back to the unfiltered universe, with a real, visible
+    # warning — not scanning zero coins in silence.
+    prefilter_warning = None
     if risk_filter and set(risk_filter) != {"core", "small_cap", "high_risk"}:
-        # No realized_volatility_annualized here deliberately — this runs
-        # BEFORE any OHLCV is fetched, so it's a coarse, rank-based cut
-        # purely to save scan work for excluded tiers. The FINAL,
-        # authoritative tier shown to the user (scanner.py's call, after
-        # OHLCV exists) also weighs liquidity and volatility and can be
-        # stricter than this pre-filter — a coin that passes this coarse
-        # cut but turns out to be abnormally volatile will still get
-        # correctly downgraded for display, it just wasn't excluded from
-        # being scanned in the first place. That's an acceptable, minor
-        # asymmetry (worth being scanned generously beats being wrongly
-        # excluded), not a correctness bug.
-        filtered_universe = []
-        for base in universe:
-            row = overview.get(base.upper(), {})
-            tier = classify_risk_tier(
-                market_cap_rank=row.get("market_cap_rank"),
-                market_cap_usd=row.get("market_cap_usd"),
-                volume_24h_usd=row.get("volume_24h_usd") or 0.0,
+        if not overview:
+            prefilter_warning = (
+                "Couldn't verify market cap/risk data for this scan (CoinGecko lookup failed) — "
+                "showing the full universe unfiltered rather than silently excluding everything."
             )
-            if tier in risk_filter:
-                filtered_universe.append(base)
-        universe = filtered_universe
+        else:
+            filtered_universe = []
+            for base in universe:
+                row = overview.get(base.upper(), {})
+                tier = classify_risk_tier(
+                    market_cap_rank=row.get("market_cap_rank"),
+                    market_cap_usd=row.get("market_cap_usd"),
+                    volume_24h_usd=row.get("volume_24h_usd") or 0.0,
+                )
+                if tier in risk_filter:
+                    filtered_universe.append(base)
+            universe = filtered_universe
 
     scanner = OpportunityScanner(
         config, whale_api_key=settings.whale_alert_api_key,
@@ -391,7 +402,7 @@ async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter:
         )
     finally:
         await scanner.close()
-    return results
+    return results, prefilter_warning
 
 
 def _scan_loading_html(label: str = "Scanning") -> str:
@@ -445,7 +456,7 @@ def _scan_loading_html(label: str = "Scanning") -> str:
     """
 
 
-def run_scan(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> list[ScanResult]:
+def run_scan(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> tuple[list[ScanResult], str | None]:
     return asyncio.run(_run_scan_async(settings, mode, universe, risk_filter))
 
 
@@ -723,7 +734,9 @@ if scan_clicked:
                 st.caption("⟳ Scanning…")
         try:
             _risk_filter = st.session_state.get("risk_filter_select", ["core", "small_cap", "high_risk"])
-            results = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)
+            results, prefilter_warning = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)
+            if prefilter_warning:
+                st.warning(prefilter_warning)
             if _recheck.max_results_shown is not None:
                 results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
             st.session_state.results = results
@@ -949,7 +962,19 @@ def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_c
 with left:
     st.markdown('<div class="section-h">Top Opportunities</div>', unsafe_allow_html=True)
     if not st.session_state.results:
-        st.info("No scans yet — click **Scan Now** to run your first scan.")
+        if st.session_state.get("last_scan_time") is not None:
+            # A scan genuinely ran (last_scan_time is set) but returned
+            # zero results — a real, different situation from never
+            # having scanned at all, and one that deserves its own
+            # honest message rather than the same "click Scan Now"
+            # copy a first-time visitor sees.
+            st.info(
+                "The last scan completed but returned no coins — this can happen with a narrow universe, "
+                "strict filters, or if upstream data was temporarily unavailable. Check the warning above "
+                "if one appeared, or try again."
+            )
+        else:
+            st.info("No scans yet — click **Scan Now** to run your first scan.")
     elif not display_results:
         st.info("No results match your current filters — try widening the score or risk-tier filters.")
     elif not _settings.smart_view.enabled:
