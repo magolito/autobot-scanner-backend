@@ -31,10 +31,10 @@ CONFIG_YAML_PATH = Path(__file__).resolve().parent.parent / "settings.yaml"
 
 
 class WeightsSettings(BaseModel):
-    strength: float = 0.22
-    oi_dynamics: float = 0.28
-    momentum: float = 0.25
-    social: float = 0.25
+    strength: float = 0.26
+    oi_dynamics: float = 0.34
+    momentum: float = 0.30
+    social: float = 0.10
 
     @model_validator(mode="after")
     def _check_sum(self):

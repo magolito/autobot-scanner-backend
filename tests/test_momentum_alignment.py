@@ -88,5 +88,79 @@ def main():
     print("\n✅ Multi-timeframe alignment test passed: the actual specification verified precisely — single-timeframe strength alone scores low relative conviction, genuine multi-timeframe agreement (especially on longer timeframes) scores high, and both bullish AND bearish alignment are treated as equally real signals.")
 
 
+def _make_ohlcv(n, trend_pct_per_candle, seed, noise=0.3):
+    """Minimal local synthesis, mirroring test_scoring_demo.py's helper —
+    duplicated rather than imported to keep this test file's only
+    dependency on the real compute_momentum() pipeline, not on another
+    test file's internals."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    prices = [100.0]
+    for _ in range(n - 1):
+        drift = trend_pct_per_candle / 100.0
+        shock = rng.normal(0, noise / 100.0)
+        prices.append(prices[-1] * (1 + drift + shock))
+    close = np.array(prices)
+    high = close * (1 + np.abs(rng.normal(0, 0.004, n)))
+    low = close * (1 - np.abs(rng.normal(0, 0.004, n)))
+    open_ = close * (1 + rng.normal(0, 0.002, n))
+    volume = np.abs(rng.normal(1_000_000, 150_000, n))
+    ts = pd.date_range(end=pd.Timestamp.now("UTC"), periods=n, freq="h")
+    return pd.DataFrame({"timestamp": ts, "open": open_, "high": high, "low": low, "close": close, "volume": volume})
+
+
+def test_15m_excluded_from_direction_through_full_pipeline():
+    """
+    The actual professional-practice fix, verified through the REAL
+    compute_momentum() pipeline end to end, not just the isolated
+    _compute_alignment helper: 15m is deliberately excluded from the
+    direction/alignment calculation that gates "Ready" classification —
+    higher timeframes decide direction, 15m doesn't get a vote on
+    whether to trade at all, only (elsewhere) on timing. Built directly
+    from a review flagging that letting 15m noise vote on direction was
+    likely net-negative for signal quality.
+    """
+    from opportunity_scanner.config import TimeframeConfig
+    from opportunity_scanner.models import MarketSnapshot
+    from opportunity_scanner.factors.momentum import compute_momentum
+
+    tf_config = TimeframeConfig()  # real default weights: 15m=0.10, 1h=0.25, 4h=0.30, 1d=0.35
+
+    # 1h, 4h, 1d all show a genuine, strong, consistent uptrend.
+    # 15m shows a strong DOWNTREND — deliberately contradicting the higher
+    # timeframes, to prove it can't drag the alignment score down.
+    snap = MarketSnapshot(
+        symbol="TEST/USDT", base="TEST", price=150.0,
+        ohlcv={
+            "15m": _make_ohlcv(260, trend_pct_per_candle=-0.6, seed=1),  # strong DOWNtrend — should NOT count
+            "1h": _make_ohlcv(260, trend_pct_per_candle=0.5, seed=2),
+            "4h": _make_ohlcv(260, trend_pct_per_candle=0.5, seed=3),
+            "1d": _make_ohlcv(260, trend_pct_per_candle=0.5, seed=4),
+        },
+    )
+
+    result = compute_momentum(snap, tf_config)
+    assert result.available, "Expected a real, computable momentum result from this synthetic data"
+
+    aligned_tfs = result.raw.get("aligned_timeframes", [])
+    assert "15m" not in aligned_tfs, f"15m should NEVER appear in the aligned timeframes list (excluded from direction entirely), got {aligned_tfs}"
+    assert result.raw["dominant_direction"] == "bullish", f"Expected bullish direction from the genuinely agreeing 1h/4h/1d, got {result.raw['dominant_direction']}"
+    assert result.raw["alignment_score"] >= 90.0, (
+        f"With 1h+4h+1d ALL genuinely agreeing and 15m EXCLUDED, alignment should be very high "
+        f"(near 100%, since 15m's weight isn't even in the denominator anymore), got {result.raw['alignment_score']}"
+    )
+    print(f"1. THE ACTUAL FIX verified through the real end-to-end pipeline: 1h/4h/1d agreeing bullish + 15m strongly DISAGREEING still produces {result.raw['alignment_score']:.0f}% alignment ('{result.raw['dominant_direction']}', timeframes: {aligned_tfs}) — 15m's contradiction never touches the direction/conviction gate: OK")
+
+    # Sanity check: 15m's own per-timeframe score DOES still exist (it's
+    # not deleted from the data), it's just excluded from the alignment
+    # calculation specifically
+    assert "15m" in result.raw.get("per_timeframe", {}), "15m's own score should still be computed and exposed, just not used for alignment/direction"
+    print("2. 15m's own per-timeframe score is still computed and exposed (not deleted), just excluded from the direction-gating alignment calculation specifically: OK")
+
+    print("\n✅ 15m-exclusion-from-direction test passed via the real compute_momentum() pipeline, not just the isolated helper.")
+
+
 if __name__ == "__main__":
     main()
+    test_15m_excluded_from_direction_through_full_pipeline()

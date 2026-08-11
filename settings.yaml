@@ -38,10 +38,15 @@ crypto_payments:
   price_usd_elite: 89.0
 
 weights:
-  strength: 0.22
-  oi_dynamics: 0.28
-  momentum: 0.25
-  social: 0.25
+  # Rebalanced from a quant-style review — Social was equal to OI
+  # Dynamics (0.25 each), but crypto social sentiment is weak, lagging,
+  # and easily gamed; treated here as a minor tertiary signal, matching
+  # how a professional desk would weight it, not an equal quarter of
+  # the model. See config.py's Weights docstring for the full reasoning.
+  strength: 0.26
+  oi_dynamics: 0.34
+  momentum: 0.30
+  social: 0.10
 
 filters:
   min_24h_volume_usd: 5000000
@@ -86,21 +91,29 @@ regime:
 # bucket instead. See smart_view.py for the classification logic.
 smart_view:
   enabled: true
+  # min_alignment_score: 0-100, real weighted multi-timeframe agreement
+  # from the momentum pillar (see factors/momentum.py's
+  # _compute_alignment) — the actual "is this genuine conviction, not
+  # just one timeframe's noise" gate, added directly from a live
+  # conversation about what "high conviction" should mean concretely.
   super_strong:
     min_score: 80.0
     min_confidence: 75.0
     allowed_risk_tiers: ["core", "small_cap"]
     min_data_completeness: 0.75
+    min_alignment_score: 60.0
   strong:
     min_score: 65.0
     min_confidence: 50.0
     allowed_risk_tiers: ["core", "small_cap", "high_risk"]
     min_data_completeness: 0.5
+    min_alignment_score: 0.0
   building:
     min_score: 45.0
     min_confidence: 0.0
     allowed_risk_tiers: ["core", "small_cap", "high_risk"]
     min_data_completeness: 0.0
+    min_alignment_score: 0.0
 
 exchange:
   primary: bybit   # legacy — only used as the "bybit" slot in market_data_priority below; not the sole source anymore

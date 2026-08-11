@@ -292,7 +292,18 @@ def compute_momentum(snap: MarketSnapshot, tf_config: TimeframeConfig) -> Factor
 
     composite = blended * 0.85 + divergence_score * 0.15
 
-    alignment = _compute_alignment(per_tf_scores, tf_config.timeframe_weights)
+    # 15m deliberately excluded from the ALIGNMENT/direction calculation
+    # specifically, though it still contributes to the overall momentum
+    # magnitude via `blended` above. Standard professional practice:
+    # higher timeframes decide direction, lower timeframes only help
+    # with entry timing — they don't get a vote on WHETHER to trade at
+    # all. At 15m you're largely reading order-flow microstructure, not
+    # trend; letting it participate in the alignment score that gates
+    # "Ready" classification meant noise on the shortest timeframe could
+    # either falsely help trigger a Ready call, or drag down genuine
+    # agreement on the timeframes that actually matter for conviction.
+    alignment_tf_scores = {tf: score for tf, score in per_tf_scores.items() if tf != "15m"}
+    alignment = _compute_alignment(alignment_tf_scores, tf_config.timeframe_weights)
 
     if alignment["dominant_direction"] == "bullish":
         boost = (alignment["alignment_score"] / 100.0) * 15.0

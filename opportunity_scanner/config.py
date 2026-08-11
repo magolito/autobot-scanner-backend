@@ -13,11 +13,21 @@ from typing import Dict, List, Optional
 
 @dataclass
 class Weights:
-    """Composite score weights. Must sum to 1.0 — validated in __post_init__."""
-    strength: float = 0.22
-    oi_dynamics: float = 0.28
-    momentum: float = 0.25
-    social: float = 0.25
+    """
+    Composite score weights. Must sum to 1.0 — validated in __post_init__.
+
+    Rebalanced directly from a quant-style review of the model: Social
+    was weighted equally with OI Dynamics (0.25 each), but crypto social
+    sentiment is weak, lagging, and easily gamed by coordinated pumps —
+    professional desks generally treat it as a minor tertiary signal,
+    not an equal quarter of the model. Cut to 0.10 and redistributed
+    proportionally to the other three pillars, preserving their existing
+    relative balance rather than picking new numbers arbitrarily.
+    """
+    strength: float = 0.26
+    oi_dynamics: float = 0.34
+    momentum: float = 0.30
+    social: float = 0.10
 
     def __post_init__(self):
         total = self.strength + self.oi_dynamics + self.momentum + self.social
