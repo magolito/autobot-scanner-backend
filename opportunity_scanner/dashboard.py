@@ -652,7 +652,7 @@ with right:
     st.markdown('<div class="mono-label">Regime</div>', unsafe_allow_html=True)
     if st.session_state.results:
         r0 = st.session_state.results[0]
-        regime_color = {"Risk-On": "#4ade80", "Neutral": "#fbbf24", "Risk-Off": "#f87171"}.get(r0.regime_label, "#8c8c89")
+        regime_color = {"Risk-On": "#4ade80", "Neutral": "#8c8c89", "Risk-Off": "#f87171"}.get(r0.regime_label, "#8c8c89")
         st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:13px;color:{regime_color}">{r0.regime_label} ({r0.regime_score if r0.regime_score is not None else "—"})</div>', unsafe_allow_html=True)
     else:
         st.markdown('<div style="font-family:DM Mono,monospace;font-size:13px;color:#8c8c89">No scan yet</div>', unsafe_allow_html=True)
@@ -670,7 +670,13 @@ with right:
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="mono-label">Filters</div>', unsafe_allow_html=True)
     min_score_filter = st.slider("Min score", 0, 100, 0)
-    risk_filter = st.multiselect("Risk tier", ["core", "small_cap", "high_risk"], default=["core", "small_cap", "high_risk"], key="risk_filter_select")
+    risk_filter = st.multiselect(
+        "Risk tier", ["core", "small_cap", "high_risk"], default=["core"], key="risk_filter_select",
+        help="**core**: top 100 by market cap — the most established, liquid coins.\n\n"
+             "**small_cap**: ranked 101-300 by market cap — real projects, less liquid, more volatile.\n\n"
+             "**high_risk**: outside the top 300, or thin volume relative to market cap — the least liquid, "
+             "most speculative tier. Defaults to core only; broaden this if you want to see riskier coins too.",
+    )
 
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="mono-label">Signal count</div>', unsafe_allow_html=True)
@@ -730,17 +736,45 @@ def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _render_result_table(results: list[ScanResult], widget_key: str):
+def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_color: str = "gray"):
+    """
+    score_bar_color is set deterministically PER BUCKET by the caller,
+    not derived per-row — Streamlit's ProgressColumn can't reliably do
+    genuine per-row conditional coloring, and "auto" (a flat 50% split)
+    already caused one confirmed contradiction with the Signal label's
+    real thresholds. Since each Smart View bucket already groups coins
+    that share a real conviction level, giving that bucket's WHOLE table
+    a single, correct color (green for Super Strong/Strong, red for
+    High Risk) is deterministic and can't disagree with anything — no
+    per-row ambiguity, no gamble on unverified frontend behavior.
+    """
     df = _build_rows(results)
     event = st.dataframe(
         df, width='stretch', hide_index=True, height=min(560, 60 + 36 * len(results)),
         on_select="rerun", selection_mode="single-row", key=widget_key,
         column_config={
-            "Score": st.column_config.ProgressColumn("Score", min_value=0, max_value=100, format="%.1f", color="gray"),
-            "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=100, format="%.0f", color="auto"),
+            "Score": st.column_config.ProgressColumn(
+                "Score", min_value=0, max_value=100, format="%.1f", color=score_bar_color,
+                help="Composite 0-100 opportunity score, blending Strength, OI Dynamics, Momentum, and Social. "
+                     "This is a relative ranking tool, not a guarantee — check Signal and Confidence alongside it.",
+            ),
+            "Confidence": st.column_config.ProgressColumn(
+                "Confidence", min_value=0, max_value=100, format="%.0f", color="auto",
+                help="How much data actually backed this score — not how bullish/bearish it is. Low confidence "
+                     "means some pillars were unavailable or disagreed with each other, so the score deserves less trust.",
+            ),
+            "Signal": st.column_config.TextColumn(
+                help="Strong Buy (80+) / Buy (65+) / Neutral (45+) / Caution (25+) / Strong Avoid — graded directly "
+                     "from the composite score using fixed thresholds, not a recommendation to trade.",
+            ),
+            "Risk": st.column_config.TextColumn(
+                help="core: top 100 by market cap. small_cap: ranked 101-300. high_risk: outside the top 300 or "
+                     "thin volume relative to market cap — kept separate from the score on purpose, so a small/risky "
+                     "coin with genuine strength can still score well without the risk context being hidden.",
+            ),
             "Strength": st.column_config.NumberColumn(format="%.0f"),
-            "OI": st.column_config.NumberColumn(format="%.0f"),
-            "Momentum": st.column_config.NumberColumn(format="%.0f"),
+            "OI": st.column_config.NumberColumn(format="%.0f", help="Open Interest dynamics — is new leveraged money confirming the price move, or is it thin/unconfirmed?"),
+            "Momentum": st.column_config.NumberColumn(format="%.0f", help="Multi-timeframe trend strength, now including real timeframe-alignment scoring — see a coin's detail view for the full breakdown."),
             "Social": st.column_config.NumberColumn(format="%.0f"),
             "Price": st.column_config.NumberColumn(format="$%.4f"),
         },
@@ -774,28 +808,28 @@ with left:
         super_strong = buckets[Bucket.SUPER_STRONG]
         st.markdown(f'<div class="mono-label" style="margin-top:8px">{BUCKET_LABELS[Bucket.SUPER_STRONG]} ({len(super_strong)})</div>', unsafe_allow_html=True)
         if super_strong:
-            _render_result_table(super_strong, widget_key="bucket_super_strong")
+            _render_result_table(super_strong, widget_key="bucket_super_strong", score_bar_color="green")
         else:
             st.caption("No Super Strong setups this scan — this bucket is intentionally selective, an empty result here is normal, not an error.")
 
         strong = buckets[Bucket.STRONG]
         st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
         if strong:
-            _render_result_table(strong, widget_key="bucket_strong")
+            _render_result_table(strong, widget_key="bucket_strong", score_bar_color="green")
         else:
             st.caption("No results in this bucket right now.")
 
         building = buckets[Bucket.BUILDING]
         if building:
             st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
-            _render_result_table(building, widget_key="bucket_building")
+            _render_result_table(building, widget_key="bucket_building", score_bar_color="gray")
 
         # High Risk / Low Conviction — deliberately less prominent, collapsed
         # by default, matching "should be less prominent or collapsed"
         high_risk = buckets[Bucket.HIGH_RISK_LOW_CONVICTION]
         if high_risk:
             with st.expander(f"{BUCKET_LABELS[Bucket.HIGH_RISK_LOW_CONVICTION]} ({len(high_risk)}) — click to expand", expanded=False):
-                _render_result_table(high_risk, widget_key="bucket_high_risk")
+                _render_result_table(high_risk, widget_key="bucket_high_risk", score_bar_color="red")
 
         # Full detailed table always stays available, per the explicit
         # "keep the ability to see the full detailed table if needed"

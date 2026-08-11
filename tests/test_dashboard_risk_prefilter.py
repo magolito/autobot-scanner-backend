@@ -72,15 +72,28 @@ def main():
         custom_input.set_value("BTC,ETH,OBSCURE").run(timeout=20)
         assert not at.exception
 
-        # 1. Default (all 3 tiers selected) — full universe reaches scan_many
+        # 1. Default is now "core" only (changed deliberately — a full "everything
+        # including high_risk" default was a live report of confusing UX). With the
+        # default, OBSCURE (high_risk) should already be excluded before scanning.
         scan_btn = next(b for b in at.button if "Scan Now" in b.label)
         scan_btn.click().run(timeout=25)
         assert not at.exception, f"Scan raised: {at.exception}"
-        assert set(captured.get("bases_passed_to_scan", [])) == {"BTC", "ETH", "OBSCURE"}, \
-            f"With all tiers selected by default, the full universe should be scanned, got {captured.get('bases_passed_to_scan')}"
-        print("1. With all risk tiers selected (default), the full universe reaches scan_many: OK")
+        assert set(captured.get("bases_passed_to_scan", [])) == {"BTC", "ETH"}, \
+            f"Default (core only) should already exclude OBSCURE (high_risk) before scanning, got {captured.get('bases_passed_to_scan')}"
+        print("1. New default (core only) correctly excludes non-core coins from the scan itself, not just the display: OK")
 
-        # 2. THE ACTUAL FIX: narrow the risk tier filter to "core" only, then rescan
+        # 2. Explicitly broadening to all 3 tiers restores the full universe
+        risk_select = next(sb for sb in at.multiselect if sb.label == "Risk tier")
+        risk_select.set_value(["core", "small_cap", "high_risk"]).run(timeout=20)
+        captured.clear()
+        scan_btn_broad = next(b for b in at.button if "Scan Now" in b.label)
+        scan_btn_broad.click().run(timeout=25)
+        assert not at.exception
+        assert set(captured.get("bases_passed_to_scan", [])) == {"BTC", "ETH", "OBSCURE"}, \
+            f"Explicitly selecting all 3 tiers should restore the full universe, got {captured.get('bases_passed_to_scan')}"
+        print("2. Explicitly broadening to all 3 tiers correctly restores the full universe: OK")
+
+        # 3. THE ACTUAL FIX: narrow the risk tier filter to "core" only, then rescan
         risk_select = next(sb for sb in at.multiselect if sb.label == "Risk tier")
         risk_select.set_value(["core"]).run(timeout=20)
         captured.clear()
@@ -89,7 +102,7 @@ def main():
         assert not at.exception, f"Scan raised: {at.exception}"
         assert set(captured.get("bases_passed_to_scan", [])) == {"BTC", "ETH"}, \
             f"THE ACTUAL FIX: filtering to 'core' only should genuinely reduce what reaches scan_many (real work saved), got {captured.get('bases_passed_to_scan')}"
-        print(f"2. THE ACTUAL FIX: filtering to 'core' only genuinely reduces what reaches scan_many to {captured['bases_passed_to_scan']} — OBSCURE correctly excluded before the expensive scan work, not just hidden from display afterward: OK")
+        print(f"3. Re-narrowing to 'core' only after broadening correctly re-excludes OBSCURE, confirming the pre-filter responds dynamically to changes: OK")
 
         print("\n✅ Dashboard risk pre-filter test passed in a real running app: the risk tier filter now genuinely reduces scan work for excluded tiers.")
 

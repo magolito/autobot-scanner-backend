@@ -40,7 +40,8 @@ def main():
         from opportunity_scanner.models import ScanResult, FactorResult
 
         async def fake_overview(self, top_n=250):
-            return {}
+            return {"BTC": {"market_cap_rank": 1, "market_cap_usd": 1_200_000_000_000, "volume_24h_usd": 30_000_000_000,
+                             "price": 65000, "change_24h_pct": 1.0, "high_24h": 66000, "low_24h": 64000}}
 
         async def fake_scan_many(self, bases, **kwargs):
             factors = {n: FactorResult(name=n, score=60, reasons=["t"], available=True) for n in ["strength", "oi_dynamics", "momentum", "social"]}
@@ -74,26 +75,25 @@ def main():
         # Find a results table dataframe and inspect its column config for the color setting.
         # The proto's printed repr double-escapes backslashes (e.g. \\\" instead of \"),
         # so normalize before searching rather than assuming a specific escaping depth.
-        found_score_auto = False
+        found_score_gray = False
         found_confidence_auto = False
         for df_elem in at.dataframe:
             normalized = str(df_elem.proto).replace("\\\\", "").replace("\\", "")
             score_idx = normalized.find('"Score": {')
             if score_idx != -1:
-                color_idx = normalized.find('"color": "auto"', score_idx)
+                gray_idx = normalized.find('"color": "gray"', score_idx)
                 confidence_idx = normalized.find('"Confidence": {', score_idx)
-                # the Score column's color setting must appear before the Confidence column starts
-                if color_idx != -1 and (confidence_idx == -1 or color_idx < confidence_idx):
-                    found_score_auto = True
+                if gray_idx != -1 and (confidence_idx == -1 or gray_idx < confidence_idx):
+                    found_score_gray = True
 
             confidence_idx2 = normalized.find('"Confidence": {')
             if confidence_idx2 != -1:
                 color_idx2 = normalized.find('"color": "auto"', confidence_idx2)
-                if color_idx2 != -1 and (color_idx2 - confidence_idx2) < 200:
+                if color_idx2 != -1 and (color_idx2 - confidence_idx2) < 800:
                     found_confidence_auto = True
 
-        assert not found_score_auto, "Score should NOT use color='auto' — it would conflict with the Signal label's real thresholds (80/65/45/25), not a flat 50%"
-        print("1. Score progress bar correctly does NOT use color='auto', avoiding a false 'green but Neutral' contradiction with the Signal label: OK")
+        assert found_score_gray, "Score should use a fixed neutral gray, not the app's red primary theme color (which misleadingly looked 'always bad'), and not color='auto' (which conflicted with the Signal label's real thresholds)"
+        print("1. Score progress bar correctly uses a fixed neutral gray — avoids both the app's misleading red default AND a false contradiction with the Signal label: OK")
 
         assert found_confidence_auto, "Expected the Confidence column's ProgressColumn config to include color='auto'"
         print("2. Confidence progress bar correctly configured with color='auto' (green above 50%, red below) — no competing label to conflict with: OK")

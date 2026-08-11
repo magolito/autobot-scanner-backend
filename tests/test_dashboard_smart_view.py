@@ -62,9 +62,20 @@ async def fake_scan_many(self, bases, **kwargs):
     return make_results()
 
 
+async def fake_overview(self, top_n=250):
+    # Pre-scan market cap lookup — fake_scan_many ignores `bases` entirely
+    # so this doesn't affect which results come back, but mocking it
+    # avoids a real (blocked, in this sandbox) network call during the
+    # pre-scan risk-tier filtering step.
+    return {b: {"market_cap_rank": 5, "market_cap_usd": 10_000_000_000, "volume_24h_usd": 1_000_000_000,
+                "price": 1.0, "change_24h_pct": 0.0, "high_24h": 1.0, "low_24h": 1.0}
+            for b in ["BTC", "ETH", "SOL", "PEPE"]}
+
+
 def main():
     from streamlit.testing.v1 import AppTest
     from opportunity_scanner.scanner import OpportunityScanner
+    from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
 
     os.environ["APP_DB_PATH"] = APP_DB
     os.environ["STORAGE__DB_PATH"] = SCAN_DB
@@ -73,7 +84,9 @@ def main():
             os.remove(p)
 
     original_scan_many = OpportunityScanner.scan_many
+    original_overview = CoinGeckoDiscoveryProvider.get_market_overview
     OpportunityScanner.scan_many = fake_scan_many
+    CoinGeckoDiscoveryProvider.get_market_overview = fake_overview
 
     try:
         at = AppTest.from_file(DASHBOARD_PATH)
@@ -83,6 +96,13 @@ def main():
         at.text_input[4].set_value("password123")
         at.button[1].click().run(timeout=20)
         assert not at.exception
+
+        # This test intentionally spans multiple risk tiers (SOL=small_cap,
+        # PEPE=high_risk) to prove all 4 buckets render — broaden the risk
+        # filter from its new core-only default so those aren't excluded
+        # from display before we even get to check the buckets.
+        risk_select = next(sb for sb in at.multiselect if sb.label == "Risk tier")
+        risk_select.set_value(["core", "small_cap", "high_risk"]).run(timeout=20)
 
         scan_btn = next(b for b in at.button if "Scan Now" in b.label)
         scan_btn.click().run(timeout=25)
@@ -111,6 +131,7 @@ def main():
 
     finally:
         OpportunityScanner.scan_many = original_scan_many
+        CoinGeckoDiscoveryProvider.get_market_overview = original_overview
         for k in ["APP_DB_PATH", "STORAGE__DB_PATH"]:
             os.environ.pop(k, None)
         for p in (APP_DB, SCAN_DB):
