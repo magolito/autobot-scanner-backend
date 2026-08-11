@@ -1,0 +1,25 @@
+# Real fix for a live report: pillar weight sliders and the risk tier
+# filter's selected-tag chips were showing in red, "creating fear" —
+# neither of those was ever intentionally colored that way. Streamlit
+# has no config.toml at all in this project, meaning the whole app was
+# running the framework's DEFAULT primary color (a red/coral, #FF4B4B),
+# which bleeds into every native widget (sliders, multiselect chips,
+# buttons) that doesn't have its own explicit styling. This wasn't a
+# deliberate "red means danger" design choice anywhere — it was simply
+# never set, and Streamlit's default happens to be red.
+#
+# Using the app's own already-established accent color instead (the
+# muted gold already used for the topbar logo dot, --gold in the custom
+# CSS) rather than picking something new — this is also deliberately
+# distinct from the app's semantic green/amber/red (--green/--amber/
+# --red) already used for actual good/bad/caution signals, so a neutral
+# UI element like a slider being gold can't be mistaken for a real
+# bullish/bearish/warning signal the way red or green would.
+
+[theme]
+base = "dark"
+primaryColor = "#B49B64"
+backgroundColor = "#0A0A08"
+secondaryBackgroundColor = "#151512"
+textColor = "#F5F4F0"
+font = "sans serif"
