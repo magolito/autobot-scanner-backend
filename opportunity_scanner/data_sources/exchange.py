@@ -80,6 +80,7 @@ class ExchangeDataSource:
         # start_scan_cycle() for the duration of a scan_many() batch, see
         # build_snapshot's docstring for why this exists.
         self._scan_cycle_tasks: Optional[Dict[str, "asyncio.Task"]] = None
+        self._hyperliquid_markets_loaded = False
 
     async def close(self):
         await self.exchange.close()
@@ -248,7 +249,29 @@ class ExchangeDataSource:
                 try:
                     async with self._hyperliquid_semaphore:
                         oi = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_open_interest(f"{base}/USDC:USDC"), ignore_exceptions=(ccxt.BadSymbol,))
-                    current = oi.get("openInterestValue") if oi else None
+                    # Confirmed real bug, not a data-availability issue: ccxt's
+                    # Hyperliquid adapter hardcodes openInterestValue to None
+                    # always (see ccxt/async_support/hyperliquid.py's
+                    # parse_open_interest) — the real figure is
+                    # openInterestAmount, in base-asset units (e.g. HYPE, not
+                    # USD), which needs multiplying by the mark price (in
+                    # oi["info"]["markPx"], the raw pre-parsed Hyperliquid
+                    # field) to get a USD-denominated value matching what the
+                    # rest of this pipeline expects. Reading openInterestValue
+                    # directly — what the code did before — silently returned
+                    # None for every single coin, every single scan, even
+                    # when Hyperliquid answered successfully.
+                    current = None
+                    if oi:
+                        amount = oi.get("openInterestAmount")
+                        info = oi.get("info") or {}
+                        mark_price_raw = info.get("markPx")
+                        try:
+                            mark_price = float(mark_price_raw) if mark_price_raw is not None else None
+                        except (TypeError, ValueError):
+                            mark_price = None
+                        if amount is not None and mark_price is not None:
+                            current = amount * mark_price
                 except (CircuitOpenError, Exception) as e:  # noqa: BLE001
                     print(f"[exchange:hyperliquid] OI fetch failed for {base}: {e}")
                     current = None
@@ -420,6 +443,30 @@ class ExchangeDataSource:
                 )
             return await self._scan_cycle_tasks[base]
         return await self._build_snapshot_uncached(base, quote, market_cap_usd, exchange_listings)
+
+    async def ensure_markets_loaded(self):
+        """
+        Real fix for a confirmed live bug: "hyperliquid markets not
+        loaded" on the very first coin of a scan. ccxt lazily loads an
+        exchange's market list on first use, but build_snapshot() fires
+        5 concurrent calls (OHLCV, ticker, OI, funding, long/short) for
+        the first coin processed — multiple of those can race to
+        trigger the lazy-load simultaneously before it's ccxt-internally
+        safe to do so, and one or more lose that race. Calling this
+        once, explicitly, before the scan's concurrent fan-out begins
+        removes the race entirely. Guarded so repeat calls (e.g. across
+        multiple scans reusing the same ExchangeDataSource) are cheap
+        no-ops, and a failure here degrades gracefully — never let this
+        block the scan, matching the pattern used everywhere else in
+        this pipeline.
+        """
+        if self._hyperliquid_markets_loaded:
+            return
+        try:
+            await self._hyperliquid.load_markets()
+            self._hyperliquid_markets_loaded = True
+        except Exception as e:  # noqa: BLE001
+            print(f"[exchange] Hyperliquid load_markets() failed, proceeding without pre-loading: {e}")
 
     def start_scan_cycle(self):
         """Call once at the start of a scan_many() batch — activates

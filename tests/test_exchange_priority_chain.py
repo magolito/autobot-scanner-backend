@@ -120,11 +120,21 @@ async def main():
     assert result4 == {}
     print("4. Every source failing (including Bybit) correctly degrades to empty/None, doesn't crash: OK")
 
+    # Tests 2-4 deliberately failed Hyperliquid/Bybit several times each to
+    # exercise the fallback chain — since the circuit breaker registry is a
+    # shared singleton (correct for production: one real breaker per
+    # provider name across the whole process), those accumulated failures
+    # would otherwise trip the breaker before this next check runs with a
+    # genuinely-succeeding Hyperliquid. Reset explicitly for test isolation.
+    from opportunity_scanner.circuit_breaker import breakers
+    await breakers.get("hyperliquid_exchange")._record_success()
+    await breakers.get("bybit_exchange")._record_success()
+
     # 5. data_sources dict on the assembled MarketSnapshot correctly reflects per-field sources
     source5 = make_source()
     source5._hyperliquid.fetch_ticker = fake_hl_ticker
     source5._hyperliquid.fetch_ohlcv = lambda symbol, timeframe, limit: asyncio.sleep(0, result=[[1700000000000, 1, 2, 0.5, 1.5, 100]])
-    source5._hyperliquid.fetch_open_interest = lambda symbol: asyncio.sleep(0, result={"openInterestValue": 5000000})
+    source5._hyperliquid.fetch_open_interest = lambda symbol: asyncio.sleep(0, result={"openInterestAmount": 200000, "openInterestValue": None, "info": {"markPx": "25.0"}})
     source5._hyperliquid.fetch_funding_rate = lambda symbol: asyncio.sleep(0, result={"fundingRate": 0.005})
     # long/short ratio has no Hyperliquid equivalent — force it through to Bybit
     async def working_ls(*a, **kw):
@@ -145,6 +155,8 @@ async def main():
 
     # 6. THE CRITICAL TEST: concurrent build_snapshot for different symbols
     # don't cross-contaminate source labels (proves the concurrency bug is fixed)
+    await breakers.get("hyperliquid_exchange")._record_success()
+    await breakers.get("bybit_exchange")._record_success()
     source6 = make_source()
 
     async def hl_ticker_by_symbol(symbol):
@@ -174,7 +186,7 @@ async def main():
     # minimal stubs so build_snapshot doesn't error on the other fields
     source6._hyperliquid.fetch_ohlcv = lambda *a, **kw: asyncio.sleep(0, result=[])
     source6.exchange.fetch_ohlcv = lambda *a, **kw: asyncio.sleep(0, result=[])
-    source6._hyperliquid.fetch_open_interest = lambda symbol: asyncio.sleep(0, result=None) if "ETH" not in symbol else asyncio.sleep(0, result={"openInterestValue": 1})
+    source6._hyperliquid.fetch_open_interest = lambda symbol: asyncio.sleep(0, result=None) if "ETH" not in symbol else asyncio.sleep(0, result={"openInterestAmount": 1, "openInterestValue": None, "info": {"markPx": "1.0"}})
     source6._hyperliquid.fetch_funding_rate = lambda symbol: asyncio.sleep(0, result=None) if "ETH" not in symbol else asyncio.sleep(0, result={"fundingRate": 0.001})
     source6._http.get = lambda *a, **kw: asyncio.sleep(0, result=type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: {"result": {"list": []}}})())
 
