@@ -822,7 +822,7 @@ with left:
         building = buckets[Bucket.BUILDING]
         if building:
             st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
-            _render_result_table(building, widget_key="bucket_building", score_bar_color="gray")
+            _render_result_table(building, widget_key="bucket_building", score_bar_color="#fbbf24")
 
         # High Risk / Low Conviction — deliberately less prominent, collapsed
         # by default, matching "should be less prominent or collapsed"
