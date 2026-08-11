@@ -256,6 +256,7 @@ SIGNAL_INDICATOR = {
     "Caution": "🟡", "Strong Avoid": "🔴",
 }
 RISK_INDICATOR = {"core": "🟢", "small_cap": "🟡", "high_risk": "🔴"}
+RISK_LABEL = {"core": "Low Risk", "small_cap": "Medium Risk", "high_risk": "High Risk"}
 
 MODE_TIMEFRAME_WEIGHTS = {
     "Scalp": {"15m": 0.35, "1h": 0.35, "4h": 0.20, "1d": 0.10},
@@ -315,22 +316,24 @@ def derive_display_flags(result: ScanResult) -> list[dict]:
     return flags
 
 
-async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> tuple[list[ScanResult], str | None]:
+async def _run_scan_async(settings, mode: str, universe: list[str]) -> list[ScanResult]:
     config = settings.to_scanner_config()
     config.timeframe_config.timeframe_weights = dict(MODE_TIMEFRAME_WEIGHTS[mode])
 
-    # Real fix for a genuinely significant, previously-undiscovered bug:
-    # risk_tier classification unconditionally returns "high_risk" when
-    # market_cap_rank is missing, and this dashboard has NEVER supplied
-    # market cap data to any scan, static presets or Trending Now, since
-    # it was first built — every coin in every scan has always been
-    # forced into high_risk regardless of its real standing. One extra
-    # CoinGecko call (cached, same pattern as discovery) fixes this for
-    # every genuinely-ranked coin; a coin truly outside the top 250 by
-    # market cap correctly still falls through to high_risk, which is
-    # the right outcome for an actually obscure/tiny asset.
+    # Market cap data still fetched — it feeds the risk tier LABEL shown
+    # on every result (classify_risk_tier unconditionally returns
+    # "high_risk" with no rank data). This used to ALSO drive a universe
+    # pre-filter and a display-time filter tied to risk tier; both were
+    # removed deliberately. Risk tier filtering caused a real, recurring
+    # class of bug this session — a failed market cap fetch silently
+    # excluded everything (first the universe before scanning, then the
+    # display after), with the scan appearing broken for reasons that
+    # had nothing to do with the actual data. Risk tier is now purely
+    # informational: the scanner categorizes every result, the person
+    # reading the output decides what to do with that information,
+    # nothing gets excluded based on it. Removing the mechanism outright
+    # is a more durable fix than continuing to patch around it.
     from opportunity_scanner.data_sources.coingecko_discovery import CoinGeckoDiscoveryProvider
-    from opportunity_scanner.risk import classify_risk_tier
 
     market_caps, market_cap_ranks = {}, {}
     mcap_provider = CoinGeckoDiscoveryProvider()
@@ -346,50 +349,6 @@ async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter:
     finally:
         await mcap_provider.close()
 
-    # Real fix for a live report: the sidebar's risk tier filter only
-    # ever filtered already-computed RESULTS for display — the actual
-    # scan still processed the full universe regardless of what was
-    # selected, so narrowing to "core only" did nothing for scan time,
-    # which isn't obvious from the UI and is a reasonable thing to
-    # expect it to do. Pre-filtering the universe here, before the
-    # expensive per-coin scan work happens, using the SAME market cap
-    # data already fetched above (no extra cost), actually reduces the
-    # work for excluded tiers instead of just hiding them afterward.
-    #
-    # THE ACTUAL BUG, found from a live report: if the market cap fetch
-    # fails entirely (network issue, CoinGecko rate limit, anything),
-    # `overview` comes back completely empty — every coin then gets
-    # classified "high_risk" (classify_risk_tier's correct, honest
-    # default when there's no data), and with the default "core only"
-    # filter, EVERY coin gets excluded before the scan even starts.
-    # scan_many([]) correctly returns [] almost instantly — no error,
-    # no results, and nothing telling the user why. The exact same
-    # class of bug already fixed elsewhere this session (a filter
-    # failing toward "exclude everything" instead of "we can't verify,
-    # so don't block"), just newly introduced here. Fixed by treating a
-    # COMPLETELY empty overview as "couldn't verify risk data" and
-    # falling back to the unfiltered universe, with a real, visible
-    # warning — not scanning zero coins in silence.
-    prefilter_warning = None
-    if risk_filter and set(risk_filter) != {"core", "small_cap", "high_risk"}:
-        if not overview:
-            prefilter_warning = (
-                "Couldn't verify market cap/risk data for this scan (CoinGecko lookup failed) — "
-                "showing the full universe unfiltered rather than silently excluding everything."
-            )
-        else:
-            filtered_universe = []
-            for base in universe:
-                row = overview.get(base.upper(), {})
-                tier = classify_risk_tier(
-                    market_cap_rank=row.get("market_cap_rank"),
-                    market_cap_usd=row.get("market_cap_usd"),
-                    volume_24h_usd=row.get("volume_24h_usd") or 0.0,
-                )
-                if tier in risk_filter:
-                    filtered_universe.append(base)
-            universe = filtered_universe
-
     scanner = OpportunityScanner(
         config, whale_api_key=settings.whale_alert_api_key,
         cache_ttls=settings.to_cache_ttls(),
@@ -402,7 +361,7 @@ async def _run_scan_async(settings, mode: str, universe: list[str], risk_filter:
         )
     finally:
         await scanner.close()
-    return results, prefilter_warning
+    return results
 
 
 def _scan_loading_html(label: str = "Scanning") -> str:
@@ -456,8 +415,8 @@ def _scan_loading_html(label: str = "Scanning") -> str:
     """
 
 
-def run_scan(settings, mode: str, universe: list[str], risk_filter: list[str] | None = None) -> tuple[list[ScanResult], str | None]:
-    return asyncio.run(_run_scan_async(settings, mode, universe, risk_filter))
+def run_scan(settings, mode: str, universe: list[str]) -> list[ScanResult]:
+    return asyncio.run(_run_scan_async(settings, mode, universe))
 
 
 def discover_trending_universe_with_overview(max_size: int = 25) -> tuple:
@@ -733,10 +692,7 @@ if scan_clicked:
             else:
                 st.caption("⟳ Scanning…")
         try:
-            _risk_filter = st.session_state.get("risk_filter_select", ["core", "small_cap", "high_risk"])
-            results, prefilter_warning = run_scan(_settings, st.session_state.mode, active_universe, risk_filter=_risk_filter)
-            if prefilter_warning:
-                st.warning(prefilter_warning)
+            results = run_scan(_settings, st.session_state.mode, active_universe)
             if _recheck.max_results_shown is not None:
                 results = sorted(results, key=lambda r: r.composite_score, reverse=True)[:_recheck.max_results_shown]
             st.session_state.results = results
@@ -789,12 +745,9 @@ with right:
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown('<div class="mono-label">Filters</div>', unsafe_allow_html=True)
     min_score_filter = st.slider("Min score", 0, 100, 0)
-    risk_filter = st.multiselect(
-        "Risk tier", ["core", "small_cap", "high_risk"], default=["core"], key="risk_filter_select",
-        help="**core**: top 100 by market cap — the most established, liquid coins.\n\n"
-             "**small_cap**: ranked 101-300 by market cap — real projects, less liquid, more volatile.\n\n"
-             "**high_risk**: outside the top 300, or thin volume relative to market cap — the least liquid, "
-             "most speculative tier. Defaults to core only; broaden this if you want to see riskier coins too.",
+    st.caption(
+        "Risk tier (Low/Medium/High) is shown on every result, not filtered — the scanner categorizes, "
+        "you decide. Timeframe (Scalp/Swing/Position, above) is the real filter that changes what's scanned."
     )
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -830,10 +783,7 @@ def rescored_results() -> list[ScanResult]:
     return out
 
 
-display_results = [
-    r for r in rescored_results()
-    if r.composite_score >= min_score_filter and r.risk_tier in risk_filter
-]
+display_results = [r for r in rescored_results() if r.composite_score >= min_score_filter]
 
 
 READINESS_INDICATOR = {"Ready": "🎯", "Caution": "⚠️", "Building": "🔧"}
@@ -859,7 +809,7 @@ def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
             "Social": f["social"].score if social_available else None,
             "Narrative": f["social"].raw.get("narrative_signal", "—") if social_available else "—",
             "Price": r.price,
-            "Risk": f"{RISK_INDICATOR.get(r.risk_tier, '⚪')} {r.risk_tier}",
+            "Risk": f"{RISK_INDICATOR.get(r.risk_tier, '⚪')} {RISK_LABEL.get(r.risk_tier, r.risk_tier)}",
         })
     return pd.DataFrame(rows)
 
@@ -940,9 +890,10 @@ def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_c
                      "not confirmed yet. Open a coin's detail view for the full reasoning.",
             ),
             "Risk": st.column_config.TextColumn(
-                help="core: top 100 by market cap. small_cap: ranked 101-300. high_risk: outside the top 300 or "
-                     "thin volume relative to market cap — kept separate from the score on purpose, so a small/risky "
-                     "coin with genuine strength can still score well without the risk context being hidden.",
+                help="Low Risk: top 100 by market cap. Medium Risk: ranked 101-300. High Risk: outside the top "
+                     "300, or thin volume relative to market cap. Informational only — kept separate from the "
+                     "score on purpose, so a smaller/riskier coin with genuine strength can still score well "
+                     "without the risk context being hidden. Every result shows here regardless of tier.",
             ),
             "Strength": st.column_config.NumberColumn(format="%.0f"),
             "OI": st.column_config.NumberColumn(format="%.0f", help="Open Interest dynamics — is new leveraged money confirming the price move, or is it thin/unconfirmed?"),
@@ -976,52 +927,53 @@ with left:
         else:
             st.info("No scans yet — click **Scan Now** to run your first scan.")
     elif not display_results:
-        st.info("No results match your current filters — try widening the score or risk-tier filters.")
-    elif not _settings.smart_view.enabled:
-        # Smart View disabled in settings — original flat-table behavior, unchanged
-        _render_result_table(display_results, widget_key="flat_table")
+        st.info("No results match your current min-score filter — try lowering it.")
     else:
-        smart_config = _settings.to_scanner_config().smart_view
-        buckets = bucket_results(display_results, smart_config)
-        _warn_if_correlated(buckets[Bucket.SUPER_STRONG] + buckets[Bucket.STRONG])
-
-        # Super Strong and Strong are the prominent, always-open sections —
-        # this is what "make Super Strong and Strong most prominent" means
-        # concretely: they render first, always expanded, with a visible
-        # count even when empty (empty Super Strong is the EXPECTED normal
-        # case most scans, not an error — "very selective" means usually zero).
-        super_strong = buckets[Bucket.SUPER_STRONG]
-        st.markdown(f'<div class="mono-label" style="margin-top:8px">{BUCKET_LABELS[Bucket.SUPER_STRONG]} ({len(super_strong)})</div>', unsafe_allow_html=True)
-        if super_strong:
-            _render_result_table(super_strong, widget_key="bucket_super_strong", score_bar_color="green")
+        if not _settings.smart_view.enabled:
+            # Smart View disabled in settings — original flat-table behavior, unchanged
+            _render_result_table(display_results, widget_key="flat_table")
         else:
-            st.caption("No Super Strong setups this scan — this bucket is intentionally selective, an empty result here is normal, not an error.")
+            smart_config = _settings.to_scanner_config().smart_view
+            buckets = bucket_results(display_results, smart_config)
+            _warn_if_correlated(buckets[Bucket.SUPER_STRONG] + buckets[Bucket.STRONG])
 
-        strong = buckets[Bucket.STRONG]
-        st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
-        if strong:
-            _render_result_table(strong, widget_key="bucket_strong", score_bar_color="green")
-        else:
-            st.caption("No results in this bucket right now.")
+            # Super Strong and Strong are the prominent, always-open sections —
+            # this is what "make Super Strong and Strong most prominent" means
+            # concretely: they render first, always expanded, with a visible
+            # count even when empty (empty Super Strong is the EXPECTED normal
+            # case most scans, not an error — "very selective" means usually zero).
+            super_strong = buckets[Bucket.SUPER_STRONG]
+            st.markdown(f'<div class="mono-label" style="margin-top:8px">{BUCKET_LABELS[Bucket.SUPER_STRONG]} ({len(super_strong)})</div>', unsafe_allow_html=True)
+            if super_strong:
+                _render_result_table(super_strong, widget_key="bucket_super_strong", score_bar_color="green")
+            else:
+                st.caption("No Super Strong setups this scan — this bucket is intentionally selective, an empty result here is normal, not an error.")
 
-        building = buckets[Bucket.BUILDING]
-        if building:
-            st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
-            _render_result_table(building, widget_key="bucket_building", score_bar_color="#fbbf24")
+            strong = buckets[Bucket.STRONG]
+            st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
+            if strong:
+                _render_result_table(strong, widget_key="bucket_strong", score_bar_color="green")
+            else:
+                st.caption("No results in this bucket right now.")
 
-        # High Risk / Low Conviction — deliberately less prominent, collapsed
-        # by default, matching "should be less prominent or collapsed"
-        high_risk = buckets[Bucket.HIGH_RISK_LOW_CONVICTION]
-        if high_risk:
-            with st.expander(f"{BUCKET_LABELS[Bucket.HIGH_RISK_LOW_CONVICTION]} ({len(high_risk)}) — click to expand", expanded=False):
-                _render_result_table(high_risk, widget_key="bucket_high_risk", score_bar_color="red")
+            building = buckets[Bucket.BUILDING]
+            if building:
+                st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
+                _render_result_table(building, widget_key="bucket_building", score_bar_color="#fbbf24")
 
-        # Full detailed table always stays available, per the explicit
-        # "keep the ability to see the full detailed table if needed"
-        # requirement — collapsed by default so it doesn't compete with
-        # the bucketed view above, but never removed.
-        with st.expander(f"View full ranked table ({len(display_results)} results, ungrouped)", expanded=False):
-            _render_result_table(display_results, widget_key="full_flat_table")
+            # High Risk / Low Conviction — deliberately less prominent, collapsed
+            # by default, matching "should be less prominent or collapsed"
+            high_risk = buckets[Bucket.HIGH_RISK_LOW_CONVICTION]
+            if high_risk:
+                with st.expander(f"{BUCKET_LABELS[Bucket.HIGH_RISK_LOW_CONVICTION]} ({len(high_risk)}) — click to expand", expanded=False):
+                    _render_result_table(high_risk, widget_key="bucket_high_risk", score_bar_color="red")
+
+            # Full detailed table always stays available, per the explicit
+            # "keep the ability to see the full detailed table if needed"
+            # requirement — collapsed by default so it doesn't compete with
+            # the bucketed view above, but never removed.
+            with st.expander(f"View full ranked table ({len(display_results)} results, ungrouped)", expanded=False):
+                _render_result_table(display_results, widget_key="full_flat_table")
 
 # ----------------------------------------------------------------- detail modal
 
@@ -1047,7 +999,7 @@ def show_detail(result: ScanResult):
         st.markdown(f'<div class="big-score">{result.composite_score:.1f}<span class="big-score-unit">/100</span></div>', unsafe_allow_html=True)
         st.markdown(signal_badge_html(result.signal), unsafe_allow_html=True)
         st.markdown(f'<div style="margin-top:8px;font-family:DM Mono,monospace;font-size:12px;color:#8c8c89">Confidence: {result.confidence:.0f} ({result.confidence_label})</div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:12px;color:#8c8c89">Risk tier: {result.risk_tier}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:12px;color:#8c8c89">Risk tier: {RISK_LABEL.get(result.risk_tier, result.risk_tier)}</div>', unsafe_allow_html=True)
         if result.correlated_peers:
             st.markdown(
                 f'<div style="font-family:DM Mono,monospace;font-size:12px;color:#fbbf24;margin-top:4px">'

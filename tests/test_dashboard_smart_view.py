@@ -98,12 +98,9 @@ def main():
         assert not at.exception
 
         # This test intentionally spans multiple risk tiers (SOL=small_cap,
-        # PEPE=high_risk) to prove all 4 buckets render — broaden the risk
-        # filter from its new core-only default so those aren't excluded
-        # from display before we even get to check the buckets.
-        risk_select = next(sb for sb in at.multiselect if sb.label == "Risk tier")
-        risk_select.set_value(["core", "small_cap", "high_risk"]).run(timeout=20)
-
+        # PEPE=high_risk) to prove all 4 buckets render — risk tier is no
+        # longer a display filter at all (removed deliberately), so every
+        # result shows regardless of tier with no extra setup needed here.
         scan_btn = next(b for b in at.button if "Scan Now" in b.label)
         scan_btn.click().run(timeout=25)
         assert not at.exception, f"Dashboard raised an exception: {at.exception}"
