@@ -82,7 +82,27 @@ class ExchangeDataSource:
         # Requests responses in a live scan, not theoretical. Bounding
         # actual concurrency with a semaphore fixes what pacing a
         # sequence can't.
-        self._hyperliquid_semaphore = asyncio.Semaphore(4)
+        #
+        # 4 turned out to be far too conservative once actually measured:
+        # a real, precisely timestamped log showed strictly sequential,
+        # evenly-spaced coin completions (~8-20s apart, one at a time)
+        # across an ENTIRE 17-coin scan, despite every level of this
+        # codebase correctly using asyncio.gather for real concurrency.
+        # The reason: a single coin's snapshot needs up to 7 separate
+        # Hyperliquid calls (4 OHLCV timeframes + ticker + OI + funding),
+        # so 17 coins meant ~119 total acquisitions competing for just 4
+        # slots — gather() was firing everything concurrently at the
+        # code level, but this semaphore squeezed the EFFECTIVE
+        # concurrency back down to near-sequential as a side effect.
+        # Raised substantially (real coin-level concurrency, not just
+        # enough to avoid an instant firehose) while still bounding
+        # total load — this matters even more as the scanned universe
+        # grows toward 50-100 coins, where 4 would be catastrophic.
+        # Genuinely a judgment call without live access to re-measure
+        # against Hyperliquid's real limits — watch for renewed 429s
+        # after this deploys, and adjust down if they reappear (should
+        # still be far better than the old serialization either way).
+        self._hyperliquid_semaphore = asyncio.Semaphore(20)
         self._coingecko = CoinGeckoDerivativesProvider(api_key=getattr(config, "coingecko_api_key", None))
         self._us_spot = USSpotProvider()
         self._http = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
