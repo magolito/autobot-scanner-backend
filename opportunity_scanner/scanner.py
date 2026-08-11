@@ -14,9 +14,10 @@ from typing import List, Optional
 from .config import ScannerConfig
 from .models import MarketSnapshot, ScanResult
 from .filters import passes_quality_filters
-from .risk import classify_risk_tier
+from .risk import classify_risk_tier, compute_realized_volatility
 from .scoring import combine_factors
 from .regime import compute_market_regime, apply_regime_filter, RegimeResult
+from .correlation import compute_correlation_clusters
 from .factors import compute_strength, compute_oi_dynamics, compute_momentum, compute_social
 from .data_sources.exchange import ExchangeDataSource
 from .data_sources.social import SocialDataSource
@@ -112,6 +113,7 @@ class OpportunityScanner:
             market_cap_rank=market_cap_rank,
             market_cap_usd=market_cap_usd,
             volume_24h_usd=snap.volume_24h_usd,
+            realized_volatility_annualized=compute_realized_volatility(snap.ohlcv.get("1d")),
         )
 
         regime_label, regime_score, regime_note, score_before = "Unknown", None, None, None
@@ -200,6 +202,28 @@ class OpportunityScanner:
                 for b in bases
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Correlation clustering — the actual answer to "if five
+            # 'Ready' signals are all just following BTC, that's one bet
+            # expressed five times, not five independent opportunities."
+            # Reuses the STILL-ACTIVE scan-cycle memoization to gather
+            # each successfully-scanned coin's daily OHLCV — a cache hit
+            # from the scoring pass just completed, not a new network
+            # call, which is exactly why this runs here, before
+            # end_scan_cycle() deactivates that cache.
+            successful_bases = [base for base, r in zip(bases, results) if not isinstance(r, Exception)]
+            daily_ohlcv_by_base: dict = {}
+            for base in successful_bases:
+                try:
+                    snap = await self.exchange_source.build_snapshot(base=base)
+                    daily_ohlcv_by_base[base] = snap.ohlcv.get("1d")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[scanner] correlation snapshot lookup failed for {base}: {e}")
+                    daily_ohlcv_by_base[base] = None
+            clusters = compute_correlation_clusters(daily_ohlcv_by_base)
+            for base, r in zip(bases, results):
+                if not isinstance(r, Exception):
+                    r.correlated_peers = clusters.get(base, [])
         finally:
             self.exchange_source.end_scan_cycle()
 

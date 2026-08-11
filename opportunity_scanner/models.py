@@ -59,3 +59,8 @@ class ScanResult:
     regime_score: Optional[float] = None
     regime_adjustment_note: Optional[str] = None
     score_before_regime_adjustment: Optional[float] = None
+    correlated_peers: List[str] = field(default_factory=list)  # other coins in the SAME scan whose recent
+                                                                  # returns are highly correlated with this one —
+                                                                  # see correlation.py; matters most for
+                                                                  # multiple "Ready" results, since highly
+                                                                  # correlated ones aren't really independent bets
