@@ -44,7 +44,21 @@ _DEFAULT_CACHE_TTLS = {
 class ExchangeDataSource:
     def __init__(self, config: ScannerConfig, cache_ttls: Optional[Dict[str, float]] = None,
                  hyperliquid_failure_threshold: int = 3, hyperliquid_cooldown_seconds: float = 90,
-                 bybit_failure_threshold: int = 3, bybit_cooldown_seconds: float = 90):
+                 bybit_failure_threshold: int = 3, bybit_cooldown_seconds: float = 3600):
+        # bybit_cooldown_seconds is deliberately much longer than
+        # Hyperliquid's — confirmed, repeated finding across this whole
+        # session: Bybit is PERMANENTLY blocked for this deployment
+        # ("The Amazon CloudFront distribution is configured to block
+        # access from your country"), not transiently struggling. A
+        # 90-second cooldown meant the breaker retried a source that can
+        # never succeed roughly every 90 seconds for the ENTIRE duration
+        # of every scan — on a 15-minute scan, that's 10+ pointless
+        # retry attempts, each a real (if brief) network round-trip,
+        # burning real time for zero chance of success. An hour-long
+        # cooldown means at most one wasted retry per hour of uptime
+        # instead of one every 90 seconds, while still self-healing
+        # automatically if the block is ever lifted, without needing a
+        # redeploy to notice.
         self.config = config
         self.cache_ttls = cache_ttls or dict(_DEFAULT_CACHE_TTLS)
         self.priority: List[str] = list(getattr(config, "market_data_priority", None) or ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"])
