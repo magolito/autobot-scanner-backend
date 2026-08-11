@@ -96,6 +96,7 @@ def apply_regime_filter(
     regime: RegimeResult,
     regime_config: RegimeConfig,
     is_btc_itself: bool,
+    relative_strength_score: Optional[float] = None,
 ) -> tuple[float, Optional[str]]:
     """
     Returns (possibly-adjusted score, explanatory note or None if unchanged).
@@ -104,15 +105,54 @@ def apply_regime_filter(
     and only when regime is Risk-Off. Bearish/neutral calls pass through
     unchanged — a low score during Risk-Off doesn't need extra scrutiny,
     it's already consistent with the regime.
+
+    relative_strength_score is Strength pillar's own rs_score (0-100,
+    already blending BTC + sector relative performance — see
+    factors/strength.py's _relative_strength) — reused directly rather
+    than computing a second, redundant BTC-relative calculation.
+
+    The dampener used to be a flat penalty applied to every bullish
+    score during Risk-Off, with no distinction between "this coin is
+    just correlated beta lagging BTC down" (the real trap) and "this
+    coin is genuinely holding up or rising while BTC falls" (real,
+    valuable relative strength — one of the classic ways professional
+    traders spot future leaders, not something to suppress). Fixed with
+    a graded response: full dampening when relative strength is weak
+    (the coin isn't actually diverging from BTC, so a bullish score
+    here is more likely just noise/lag), fading to zero dampening as
+    relative strength gets genuinely strong, with an explicit positive
+    note when that happens rather than silently doing nothing.
     """
     if is_btc_itself:
         return composite_score, None
 
     if regime.label == "Risk-Off" and composite_score > regime_config.dampen_above_score:
-        adjusted = _clamp(composite_score - regime_config.risk_off_dampener_points)
+        if relative_strength_score is None:
+            # No relative-strength data to judge by — the original,
+            # more cautious default applies, since we can't tell trap
+            # from leadership without it.
+            factor = 1.0
+        elif relative_strength_score <= 50:
+            factor = 1.0  # tracking or underperforming BTC/sector despite a bullish score — the real trap case
+        elif relative_strength_score >= 80:
+            factor = 0.0  # genuinely strong divergence — real relative strength, don't suppress it
+        else:
+            factor = 1.0 - (relative_strength_score - 50) / 30.0  # linear fade from full dampening to none
+
+        dampener_points = regime_config.risk_off_dampener_points * factor
+        if dampener_points <= 0.5:
+            note = (
+                f"Regime is Risk-Off, but relative strength vs BTC/sector is genuinely strong "
+                f"(rs_score {relative_strength_score:.0f}/100) — this looks like real divergence, not "
+                f"correlated beta, so no dampening applied. Worth attention as a potential leader if the regime turns."
+            )
+            return composite_score, note
+        adjusted = _clamp(composite_score - dampener_points)
         note = (
-            f"Dampened {regime_config.risk_off_dampener_points:.0f}pts: BTC regime is Risk-Off "
-            f"(regime score {regime.score:.0f}/100) — bullish signals need extra scrutiny while BTC is unhealthy"
+            f"Dampened {dampener_points:.0f}pts: BTC regime is Risk-Off (regime score {regime.score:.0f}/100)"
+            + (f", relative strength vs BTC/sector is weak (rs_score {relative_strength_score:.0f}/100) — this "
+               f"looks more like correlated beta than genuine independent strength" if relative_strength_score is not None else "")
+            + " — bullish signals need extra scrutiny while BTC is unhealthy"
         )
         return adjusted, note
 

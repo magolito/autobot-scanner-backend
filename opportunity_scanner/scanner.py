@@ -118,7 +118,10 @@ class OpportunityScanner:
         final_signal = signal
         if regime is not None:
             is_btc = base.upper() == "BTC"
-            adjusted, note = apply_regime_filter(composite, regime, self.config.regime_config, is_btc_itself=is_btc)
+            adjusted, note = apply_regime_filter(
+                composite, regime, self.config.regime_config, is_btc_itself=is_btc,
+                relative_strength_score=factors["strength"].raw.get("rs_score") if factors["strength"].available else None,
+            )
             regime_label = regime.label
             regime_score = regime.score
             if note is not None:
@@ -175,6 +178,11 @@ class OpportunityScanner:
         # permanently stuck on for later one-off calls.
         self.exchange_source.start_scan_cycle()
         try:
+            # Load Hyperliquid's market list once, explicitly, before any
+            # concurrent fetches fire — see ensure_markets_loaded's
+            # docstring for the exact race this closes.
+            await self.exchange_source.ensure_markets_loaded()
+
             # BTC snapshot first — every other coin's relative strength needs it,
             # and the regime filter is computed from BTC's own momentum + volatility
             btc_snap = await self.exchange_source.build_snapshot(base="BTC")

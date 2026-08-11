@@ -81,5 +81,58 @@ def main():
     print("\n✅ Regime awareness test passed: dampens bullish alt scores only under Risk-Off, never touches BTC itself or bearish calls.")
 
 
+def test_relative_strength_graded_dampening():
+    """
+    Direct fix for a sharp, correct pushback: the dampener used to treat
+    EVERY bullish score during Risk-Off identically, whether the coin was
+    genuinely diverging from BTC (real relative strength — one of the
+    classic ways professional traders spot future leaders) or just
+    correlated beta lagging BTC down (the actual trap). Reuses Strength's
+    existing rs_score (BTC+sector relative performance) to distinguish
+    them with a graded response, not a hard cutoff.
+    """
+    from opportunity_scanner.regime import apply_regime_filter, RegimeResult
+    from opportunity_scanner.config import RegimeConfig
+
+    regime_config = RegimeConfig()
+    risk_off_regime = RegimeResult(label="Risk-Off", score=20.0, btc_momentum_score=15.0, volatility_score=30.0, realized_vol_annualized=0.9)
+
+    # 1. Weak relative strength (tracking/underperforming BTC despite a
+    # bullish score) -> full dampening, the real "trap" case, unchanged
+    # from the original behavior
+    adjusted1, note1 = apply_regime_filter(78.0, risk_off_regime, regime_config, is_btc_itself=False, relative_strength_score=40.0)
+    assert adjusted1 == 78.0 - regime_config.risk_off_dampener_points, f"Weak relative strength should get FULL dampening, got {adjusted1}"
+    assert "weak" in note1.lower() or "correlated beta" in note1.lower()
+    print(f"1. Weak relative strength (rs_score=40) -> FULL dampening applied, correctly identified as likely correlated beta: OK")
+
+    # 2. Genuinely strong relative strength (real divergence from BTC) ->
+    # ZERO dampening, with an explicit positive note, not silence
+    adjusted2, note2 = apply_regime_filter(78.0, risk_off_regime, regime_config, is_btc_itself=False, relative_strength_score=85.0)
+    assert adjusted2 == 78.0, f"Strong genuine relative strength should get ZERO dampening, got {adjusted2}"
+    assert note2 is not None and "leader" in note2.lower(), f"Expected an explicit positive note explaining why no dampening was applied, got: {note2}"
+    print(f"2. THE ACTUAL FIX: strong relative strength (rs_score=85) -> ZERO dampening, with an explicit note flagging it as a potential leader, not silent: OK")
+
+    # 3. Moderate relative strength -> partial, graded dampening, not all-or-nothing
+    adjusted3, note3 = apply_regime_filter(78.0, risk_off_regime, regime_config, is_btc_itself=False, relative_strength_score=65.0)
+    full_dampen = 78.0 - regime_config.risk_off_dampener_points
+    assert full_dampen < adjusted3 < 78.0, f"Moderate relative strength (rs_score=65) should get PARTIAL dampening, between {full_dampen} and 78.0, got {adjusted3}"
+    print(f"3. Moderate relative strength (rs_score=65) -> partial, graded dampening ({adjusted3:.1f}), correctly between full dampening and none — not a hard cutoff: OK")
+
+    # 4. Exactly at the boundary values
+    adjusted4, _ = apply_regime_filter(78.0, risk_off_regime, regime_config, is_btc_itself=False, relative_strength_score=50.0)
+    assert adjusted4 == 78.0 - regime_config.risk_off_dampener_points, "Exactly at rs_score=50 should still get full dampening (the boundary is inclusive on the 'weak' side)"
+    adjusted5, note5 = apply_regime_filter(78.0, risk_off_regime, regime_config, is_btc_itself=False, relative_strength_score=80.0)
+    assert adjusted5 == 78.0, "Exactly at rs_score=80 should get zero dampening (the boundary is inclusive on the 'strong' side)"
+    print("4. Boundary values (rs_score=50 and rs_score=80) correctly resolve to full and zero dampening respectively: OK")
+
+    # 5. No relative strength data at all -> falls back to the original, more cautious full-dampening default
+    adjusted6, note6 = apply_regime_filter(78.0, risk_off_regime, regime_config, is_btc_itself=False, relative_strength_score=None)
+    assert adjusted6 == 78.0 - regime_config.risk_off_dampener_points, "Missing relative strength data should fall back to the original cautious default (full dampening), not assume leadership"
+    print("5. Missing relative strength data correctly falls back to the original cautious default (full dampening) rather than assuming leadership without evidence: OK")
+
+    print("\n✅ Graded relative-strength dampening test passed: the actual fix verified — genuine divergence from BTC during Risk-Off is no longer treated identically to correlated beta lag, with a smooth graded response, not a hard cutoff, and an explicit positive note when dampening is skipped.")
+
+
 if __name__ == "__main__":
     main()
+    test_relative_strength_graded_dampening()

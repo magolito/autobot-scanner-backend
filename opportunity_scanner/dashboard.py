@@ -54,6 +54,7 @@ from opportunity_scanner.config import UNIVERSE_PRESETS, DEFAULT_UNIVERSE_PRESET
 from opportunity_scanner.storage import ScanStorage
 from opportunity_scanner.models import ScanResult, FactorResult
 from opportunity_scanner.smart_view import Bucket, bucket_results, BUCKET_LABELS, data_completeness
+from opportunity_scanner.readiness import classify_readiness
 
 # ----------------------------------------------------------------- page setup
 
@@ -132,6 +133,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .flag-danger { border-left-color: var(--red); background: rgba(248,113,113,0.06); color: #ffb4b4; }
 .flag-warning { border-left-color: var(--amber); background: rgba(251,191,36,0.06); color: #ffd98a; }
 .flag-info { border-left-color: var(--gray); background: rgba(245,244,240,0.03); color: var(--gray-mid); }
+.flag-positive { border-left-color: var(--green); background: rgba(74,222,128,0.06); color: #a7f3d0; }
 
 /* Thesis box */
 .thesis-box { background: rgba(245,244,240,0.03); border-left: 2px solid var(--gold); padding: 16px 20px; font-size: 14px; color: var(--gray-mid); line-height: 1.7; }
@@ -275,7 +277,13 @@ def derive_display_flags(result: ScanResult) -> list[dict]:
             flags.append({"label": "Bullish momentum divergence detected", "sev": "info"})
 
     if result.regime_adjustment_note:
-        flags.append({"label": result.regime_adjustment_note, "sev": "warning"})
+        # The regime note is now two genuinely different cases: an actual
+        # dampening (score reduced — a real warning) vs. a case where
+        # relative strength was strong enough that NO dampening was
+        # applied (a positive, informational signal, not a warning) —
+        # see regime.py's apply_regime_filter for the full reasoning.
+        is_positive_note = "no dampening applied" in result.regime_adjustment_note
+        flags.append({"label": result.regime_adjustment_note, "sev": "positive" if is_positive_note else "warning"})
 
     if not result.passed_filters:
         for note in result.filter_notes:
@@ -717,14 +725,23 @@ display_results = [
 ]
 
 
+READINESS_INDICATOR = {"Ready": "🎯", "Caution": "⚠️", "Building": "🔧"}
+
+
 def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
     rows = []
     for i, r in enumerate(results, 1):
         f = r.factors
         social_available = f["social"].available
+        readiness = classify_readiness(r)
+        setup_text = readiness["label"]
+        if readiness["label"] == "Ready":
+            side = "Long" if readiness["direction"] == "bullish" else "Short"
+            setup_text = f"Ready ({side})"
         rows.append({
             "Rank": i, "Symbol": r.base, "Score": r.composite_score,
             "Signal": f"{SIGNAL_INDICATOR.get(r.signal, '⚪')} {r.signal}",
+            "Setup": f"{READINESS_INDICATOR.get(readiness['label'], '🔧')} {setup_text}",
             "Confidence": r.confidence, "Strength": f["strength"].score if f["strength"].available else None,
             "OI": f["oi_dynamics"].score if f["oi_dynamics"].available else None,
             "Momentum": f["momentum"].score if f["momentum"].available else None,
@@ -766,6 +783,12 @@ def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_c
             "Signal": st.column_config.TextColumn(
                 help="Strong Buy (80+) / Buy (65+) / Neutral (45+) / Caution (25+) / Strong Avoid — graded directly "
                      "from the composite score using fixed thresholds, not a recommendation to trade.",
+            ),
+            "Setup": st.column_config.TextColumn(
+                help="🎯 Ready: real multi-timeframe alignment (60%+) AND OI confirming the move with genuine "
+                     "positioning — an active setup. ⚠️ Caution: timeframes agree, but OI is moving against the "
+                     "move (covering/liquidation, not fresh conviction). 🔧 Building: structure still forming, "
+                     "not confirmed yet. Open a coin's detail view for the full reasoning.",
             ),
             "Risk": st.column_config.TextColumn(
                 help="core: top 100 by market cap. small_cap: ranked 101-300. high_risk: outside the top 300 or "
@@ -842,6 +865,20 @@ with left:
 
 @st.dialog("Coin Detail", width="large")
 def show_detail(result: ScanResult):
+    readiness = classify_readiness(result)
+    readiness_color = {"Ready": "#4ade80", "Caution": "#fbbf24", "Building": "#8c8c89"}.get(readiness["label"], "#8c8c89")
+    st.markdown(
+        f'<div style="background:rgba(255,255,255,0.03);border:1px solid {readiness_color}40;border-radius:8px;'
+        f'padding:12px 16px;margin-bottom:16px">'
+        f'<div style="font-family:DM Mono,monospace;font-size:15px;font-weight:600;color:{readiness_color}">'
+        f'{READINESS_INDICATOR.get(readiness["label"], "🔧")} {readiness["label"]}'
+        f'{" — " + ("Long" if readiness["direction"] == "bullish" else "Short") if readiness["label"] == "Ready" else ""}'
+        f'</div>'
+        f'<div style="font-family:DM Sans,sans-serif;font-size:13px;color:#b8b7b2;margin-top:4px">{readiness["explanation"]}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
     top1, top2 = st.columns([1, 2])
     with top1:
         st.markdown(f'<div class="big-score">{result.composite_score:.1f}<span class="big-score-unit">/100</span></div>', unsafe_allow_html=True)
