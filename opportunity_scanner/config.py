@@ -266,11 +266,16 @@ class ScannerConfig:
     # optional (per the explicit "never let Bybit being blocked break the
     # scan" requirement). Configurable via settings.yaml's
     # market_data_priority — see Settings.to_scanner_config().
+    #
+    # Bybit removed from the default entirely (not just deprioritized) —
+    # confirmed permanently geo-blocked, repeatedly, across every scan
+    # this whole session. See settings.yaml's market_data_priority
+    # comment for the full reasoning.
     market_data_priority: list = None  # set to the real default in __post_init__ below
 
     def __post_init__(self):
         if self.market_data_priority is None:
-            self.market_data_priority = ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"]
+            self.market_data_priority = ["hyperliquid", "coingecko", "coinbase", "kraken"]
     quote_currency: str = "USDT"
 
     # LunarCrush (social pillar) — see data_sources/social.py

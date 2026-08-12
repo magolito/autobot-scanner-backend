@@ -120,11 +120,24 @@ exchange:
   quote_currency: USDT
   # Strict priority order for price/OHLCV/OI/funding — first source to
   # answer wins, no averaging. Hyperliquid first (no US restriction,
-  # matches what AutoBot actually trades), Bybit last and optional
-  # (confirmed geo-blocked for US-hosted deployments via a live Railway
-  # deployment). Drop "bybit" from this list entirely if you'd rather
-  # not even attempt it.
-  market_data_priority: ["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"]
+  # matches what AutoBot actually trades).
+  #
+  # Bybit removed from this list entirely — not just deprioritized.
+  # Confirmed permanently geo-blocked ("The Amazon CloudFront
+  # distribution is configured to block access from your country"),
+  # repeatedly, consistently, across every single scan this whole
+  # session, for EVERY data point (ticker, OHLCV, OI, funding, long/
+  # short ratio) — never once succeeded. The circuit breaker already
+  # failed these fast once open, but that's still real per-call
+  # overhead (~85+ calls per scan) and log noise that was actively
+  # making it harder to find genuine signal in production logs. The
+  # 4 remaining sources already cover price/OHLCV/OI/funding without
+  # it. Long/short ratio has no fallback (Bybit-exclusive data) and
+  # is now honestly unavailable rather than attempted and failing
+  # every time. Re-add "bybit" here if the geo-block is ever lifted —
+  # the integration code itself is untouched, just not in the active
+  # default chain.
+  market_data_priority: ["hyperliquid", "coingecko", "coinbase", "kraken"]
 
 universe:
   default: ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT"]

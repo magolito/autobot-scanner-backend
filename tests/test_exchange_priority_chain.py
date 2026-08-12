@@ -84,7 +84,10 @@ async def main():
     assert bybit_called2["value"] is False, "Bybit should never be tried when CoinGecko succeeds"
     print("2. Hyperliquid failure correctly falls through to CoinGecko, Bybit never tried: OK")
 
-    # 3. Everything fails except Bybit -> Bybit used as the true last resort
+    # 3. Everything fails, Bybit is no longer in the DEFAULT priority at
+    # all (confirmed permanently blocked, removed entirely rather than
+    # just deprioritized) -> correctly unavailable, not a silent
+    # fallback to a source that was never going to work anyway
     source3 = make_source()
 
     async def failing(*a, **kw):
@@ -93,18 +96,33 @@ async def main():
     async def failing_coingecko(base):
         return None
 
-    async def working_bybit_ticker(symbol):
-        return {"last": 63000.0, "bid": 62999, "ask": 63001, "quoteVolume": 500000}
-
     source3._hyperliquid.fetch_ticker = failing
     source3._coingecko.get_snapshot = failing_coingecko
     source3._us_spot.get_spot_price = lambda base: asyncio.sleep(0, result=None)
-    source3.exchange.fetch_ticker = working_bybit_ticker
 
     result3, used_source3 = await source3.fetch_ticker_data_with_source("CHECK3/USDT")
-    assert used_source3 == "bybit"
-    assert result3["price"] == 63000.0
-    print("3. Every higher-priority source failing correctly falls all the way through to Bybit as last resort: OK")
+    assert used_source3 == "none"
+    assert result3 == {}
+    assert "bybit" not in source3.priority, "Bybit should not be in the default priority at all anymore"
+    print("3. THE ACTUAL FIX: with Bybit removed from the default priority (confirmed permanently blocked), everything else failing correctly resolves to unavailable — no pointless attempt at a source that never succeeds: OK")
+
+    # 3b. Bybit's integration code itself is NOT broken — proving it
+    # still genuinely works as a fallback if explicitly re-added to a
+    # custom priority list (e.g. if the geo-block is ever lifted)
+    source3b = make_source(monkeypatched_priority=["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"])
+
+    async def working_bybit_ticker(symbol):
+        return {"last": 63000.0, "bid": 62999, "ask": 63001, "quoteVolume": 500000}
+
+    source3b._hyperliquid.fetch_ticker = failing
+    source3b._coingecko.get_snapshot = failing_coingecko
+    source3b._us_spot.get_spot_price = lambda base: asyncio.sleep(0, result=None)
+    source3b.exchange.fetch_ticker = working_bybit_ticker
+
+    result3b, used_source3b = await source3b.fetch_ticker_data_with_source("CHECK3B/USDT")
+    assert used_source3b == "bybit"
+    assert result3b["price"] == 63000.0
+    print("3b. Bybit's fallback code path itself still genuinely works — confirmed by explicitly re-adding it to a custom priority list, proving this was a configuration choice, not broken code: OK")
 
     # 4. Every source fails -> graceful None, not a crash
     source4 = make_source()
@@ -131,7 +149,9 @@ async def main():
     await breakers.get("bybit_exchange")._record_success()
 
     # 5. data_sources dict on the assembled MarketSnapshot correctly reflects per-field sources
-    source5 = make_source()
+    # (explicitly includes "bybit" in priority here since this test specifically verifies
+    # Bybit-sourced attribution for long/short ratio, which is opt-in now, not default)
+    source5 = make_source(monkeypatched_priority=["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"])
     source5._hyperliquid.fetch_ticker = fake_hl_ticker
     source5._hyperliquid.fetch_ohlcv = lambda symbol, timeframe, limit: asyncio.sleep(0, result=[[1700000000000, 1, 2, 0.5, 1.5, 100]])
     source5._hyperliquid.fetch_open_interest = lambda symbol: asyncio.sleep(0, result={"openInterestAmount": 200000, "openInterestValue": None, "info": {"markPx": "25.0"}})
@@ -157,7 +177,12 @@ async def main():
     # don't cross-contaminate source labels (proves the concurrency bug is fixed)
     await breakers.get("hyperliquid_exchange")._record_success()
     await breakers.get("bybit_exchange")._record_success()
-    source6 = make_source()
+    # Explicitly includes "bybit" here since this test's fallback scenario
+    # (BTC falls through to the last-resort source) specifically needs a
+    # last-resort source in the chain to exercise — the actual thing being
+    # tested (concurrent snapshots not cross-contaminating source labels)
+    # is independent of which specific source that is.
+    source6 = make_source(monkeypatched_priority=["hyperliquid", "coingecko", "coinbase", "kraken", "bybit"])
 
     async def hl_ticker_by_symbol(symbol):
         return {"last": 100.0, "bid": 99, "ask": 101, "quoteVolume": 1000}
