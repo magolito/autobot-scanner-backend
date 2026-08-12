@@ -181,12 +181,26 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
    a status pill + a real footer readout), not a generic rounded box.
    Sharper corners (4px) than metric-card's 12px on purpose — the
    bracket motif reads as a targeting/scanning device, which only
-   works with a harder edge, not a soft one. */
+   works with a harder edge, not a soft one.
+
+   Glass techniques blended in deliberately, not a wholesale switch to
+   a generic glass-and-neon look: backdrop blur + a soft top-edge
+   highlight (light source from above, the actual physical cue that
+   reads as "glass" rather than just "transparent"), kept restrained
+   and still anchored to the gold/near-black identity above. */
 .reticle-card {
-    position: relative; background: rgba(245,244,240,0.03); border: 1px solid var(--border);
-    border-radius: 4px; padding: 20px 22px; transition: border-color 0.15s ease, transform 0.15s ease;
+    position: relative; background: rgba(245,244,240,0.045);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border); border-top: 1px solid rgba(245,244,240,0.14);
+    border-radius: 4px; padding: 20px 22px; transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.2);
 }
-.reticle-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.reticle-card:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: 0 4px 8px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.28); }
+/* Status-driven glow — restrained (a soft ring, not a neon halo), and
+   only for genuinely notable states (Ready/live), not applied broadly
+   enough to become wallpaper noise */
+.reticle-card.glow-ready { box-shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.2), 0 0 0 1px rgba(74,222,128,0.15), 0 0 24px rgba(74,222,128,0.06); }
+.reticle-card.glow-ready:hover { box-shadow: 0 4px 8px rgba(0,0,0,0.35), 0 12px 32px rgba(0,0,0,0.28), 0 0 0 1px rgba(74,222,128,0.22), 0 0 32px rgba(74,222,128,0.1); }
 .reticle-corner { position: absolute; width: 12px; height: 12px; pointer-events: none; }
 .reticle-corner.tl { top: -1px; left: -1px; border-top: 1.5px solid var(--gold); border-left: 1.5px solid var(--gold); }
 .reticle-corner.tr { top: -1px; right: -1px; border-top: 1.5px solid var(--gold); border-right: 1.5px solid var(--gold); }
@@ -205,6 +219,17 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
     display: flex; justify-content: space-between;
 }
+
+/* Opportunity card grid — Super Strong / Strong buckets rendered as
+   real reticle cards (one per coin), not a table. Building/High-Risk
+   buckets deliberately stay as tables below this — density is a real
+   strength for a "scan a lot of rows quickly" bucket, so this doesn't
+   fight that; it's reserved for the featured, high-conviction results
+   people actually look at first. */
+.opp-card-score { font-family: 'Playfair Display', serif; font-size: 34px; line-height: 1; color: var(--white); margin-bottom: 2px; }
+.opp-card-symbol { font-family: 'DM Mono', monospace; font-size: 13px; letter-spacing: 0.08em; color: var(--white); font-weight: 500; }
+.opp-card-pillars { display: flex; gap: 14px; font-family: 'DM Mono', monospace; font-size: 10px; color: var(--gray); margin-top: 10px; }
+.opp-card-pillars .pv { color: var(--gray-mid); }
 
 /* Dotted divider with a status readout in the middle — matching
    autobotpro.trading's own section-break pattern
@@ -853,31 +878,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 
 # ----------------------------------------------------------------- main layout
 
-left, right = st.columns([7, 3])
-
-with right:
-    st.markdown('<div class="mono-label">Regime</div>', unsafe_allow_html=True)
-    if st.session_state.results:
-        r0 = st.session_state.results[0]
-        regime_color = {"Risk-On": "#4ade80", "Neutral": "#8c8c89", "Risk-Off": "#f87171"}.get(r0.regime_label, "#8c8c89")
-        st.markdown(f'<div style="font-family:DM Mono,monospace;font-size:13px;color:{regime_color}">{r0.regime_label} ({r0.regime_score if r0.regime_score is not None else "—"})</div>', unsafe_allow_html=True)
-        # Real explanation of what this is actually doing, not just a
-        # label — this reads BTC's own health (momentum + volatility)
-        # once per scan, since most alts trade as beta on BTC. A
-        # "Strong Buy" on an alt while BTC is breaking down is more
-        # often a relief bounce than real strength.
-        regime_explain = {
-            "Risk-On": "BTC is healthy — bullish alt scores are taken at face value, no adjustment applied.",
-            "Neutral": "BTC is neither clearly healthy nor unhealthy — no adjustment applied to other coins' scores.",
-            "Risk-Off": "BTC looks unhealthy — bullish scores on other coins are being dampened, unless a coin shows genuine strength independent of BTC (see its detail view for a relative-strength note).",
-        }.get(r0.regime_label, "")
-        if regime_explain:
-            st.caption(regime_explain)
-    else:
-        st.markdown('<div style="font-family:DM Mono,monospace;font-size:13px;color:#8c8c89">No scan yet</div>', unsafe_allow_html=True)
-        st.caption("Reads BTC's own health once per scan — since most alts trade as beta on BTC, a bullish score elsewhere while BTC looks unhealthy gets extra scrutiny.")
-
-    st.markdown("<br>", unsafe_allow_html=True)
+with st.expander("⚙ Adjust Scoring Weights & Filters", expanded=False):
     st.markdown('<div class="mono-label">Pillar weights</div>', unsafe_allow_html=True)
     w = st.session_state.weights
     ws = w["strength"] = st.slider("Strength", 0.0, 1.0, w["strength"], 0.01, key="w_strength")
@@ -894,16 +895,6 @@ with right:
         "Risk tier (Low/Medium/High) is shown on every result, not filtered — the scanner categorizes, "
         "you decide. Timeframe (Scalp/Swing/Position, above) is the real filter that changes what's scanned."
     )
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="mono-label">Signal count</div>', unsafe_allow_html=True)
-    if st.session_state.results:
-        counts = pd.Series([r.signal for r in st.session_state.results]).value_counts()
-        for sig in ["Strong Buy", "Buy", "Neutral", "Caution", "Strong Avoid"]:
-            n = int(counts.get(sig, 0))
-            st.markdown(f'<div style="display:flex;justify-content:space-between;font-family:DM Mono,monospace;font-size:12px;padding:4px 0">{signal_badge_html(sig)}<span style="color:#8c8c89">{n}</span></div>', unsafe_allow_html=True)
-    else:
-        st.caption("Run a scan to see signal counts")
 
 # apply weight overrides to results (instant, no re-fetch — recomputes from stored FactorResults)
 def rescored_results() -> list[ScanResult]:
@@ -1000,6 +991,61 @@ def _warn_if_correlated(results: list[ScanResult]):
         )
 
 
+def _render_reticle_grid(results: list[ScanResult], widget_key: str, cols_per_row: int = 3):
+    """
+    The real, visible replacement for a plain table on the two FEATURED
+    buckets (Super Strong, Strong) — direct response to live feedback
+    that the table-only view "all looks the same." Building and High
+    Risk stay as tables deliberately (density is the right tool for
+    bulk-scanning many rows; cards are the right tool for a small,
+    featured set you're meant to actually look at individually).
+
+    Each card is real HTML (the reticle-corner signature) paired with a
+    genuine Streamlit button beneath it for the click-to-detail
+    interaction — HTML alone can't trigger a Python callback, so the
+    button is the actual mechanism, not decoration.
+    """
+    signal_colors = {"Strong Buy": "#4ade80", "Buy": "#4ade80", "Neutral": "#8c8c89", "Caution": "#fbbf24", "Strong Avoid": "#f87171"}
+    for row_start in range(0, len(results), cols_per_row):
+        row_results = results[row_start:row_start + cols_per_row]
+        cols = st.columns(cols_per_row)
+        for col, r in zip(cols, row_results):
+            with col:
+                readiness = classify_readiness(r)
+                status_cls = {"Ready": "status-ready", "Caution": "status-caution", "Building": "status-building"}.get(readiness["label"], "status-building")
+                hot_now = classify_hot_now(r)
+                hot_badge = f' <span style="color:#fbbf24">⚡{hot_now["timeframe"]}</span>' if hot_now["is_hot"] else ""
+                sig_color = signal_colors.get(r.signal, "#8c8c89")
+                f = r.factors
+                strength_v = f["strength"].score if f["strength"].available else None
+                oi_v = f["oi_dynamics"].score if f["oi_dynamics"].available else None
+                momentum_v = f["momentum"].score if f["momentum"].available else None
+                pillar_line = " · ".join(
+                    p for p in [
+                        f"S{strength_v:.0f}" if strength_v is not None else None,
+                        f"O{oi_v:.0f}" if oi_v is not None else None,
+                        f"M{momentum_v:.0f}" if momentum_v is not None else None,
+                    ] if p is not None
+                )
+                card_glow_cls = " glow-ready" if readiness["label"] == "Ready" else ""
+                st.markdown(
+                    f'<div class="reticle-card{card_glow_cls}" style="margin-bottom:10px">'
+                    f'<span class="reticle-corner tl"></span><span class="reticle-corner tr"></span>'
+                    f'<span class="reticle-corner bl"></span><span class="reticle-corner br"></span>'
+                    f'<div class="reticle-header">'
+                    f'<span class="reticle-title" style="font-size:14px;color:#f5f4f0">{r.base}</span>'
+                    f'<span class="reticle-status {status_cls}">{readiness["label"]}</span>'
+                    f'</div>'
+                    f'<div style="font-family:Playfair Display,serif;font-size:34px;color:#f5f4f0;line-height:1">{r.composite_score:.1f}</div>'
+                    f'<div style="font-family:DM Mono,monospace;font-size:12px;color:{sig_color};margin-top:2px">{r.signal}{hot_badge}</div>'
+                    f'<div class="reticle-footer"><span>{pillar_line}</span><span>${r.price:,.4f}</span></div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+                if st.button("View Detail", key=f"{widget_key}_detail_{r.base}", width='stretch'):
+                    st.session_state.detail_result = r
+
+
 def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_color: str = "gray"):
     """
     score_bar_color is set deterministically PER BUCKET by the caller,
@@ -1065,79 +1111,78 @@ def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_c
             st.session_state.detail_result = selected_result
 
 
-with left:
-    st.markdown('<div class="section-h">Top Opportunities</div>', unsafe_allow_html=True)
-    if not st.session_state.results:
-        if st.session_state.get("last_scan_time") is not None:
-            # A scan genuinely ran (last_scan_time is set) but returned
-            # zero results — a real, different situation from never
-            # having scanned at all, and one that deserves its own
-            # honest message rather than the same "click Scan Now"
-            # copy a first-time visitor sees.
-            st.info(
-                "The last scan completed but returned no coins — this can happen with a narrow universe, "
-                "strict filters, or if upstream data was temporarily unavailable. Check the warning above "
-                "if one appeared, or try again."
-            )
-        else:
-            st.info("No scans yet — click **Scan Now** to run your first scan.")
-    elif not display_results:
-        st.info("No results match your current min-score filter — try lowering it.")
+st.markdown('<div class="section-h">Top Opportunities</div>', unsafe_allow_html=True)
+if not st.session_state.results:
+    if st.session_state.get("last_scan_time") is not None:
+        # A scan genuinely ran (last_scan_time is set) but returned
+        # zero results — a real, different situation from never
+        # having scanned at all, and one that deserves its own
+        # honest message rather than the same "click Scan Now"
+        # copy a first-time visitor sees.
+        st.info(
+            "The last scan completed but returned no coins — this can happen with a narrow universe, "
+            "strict filters, or if upstream data was temporarily unavailable. Check the warning above "
+            "if one appeared, or try again."
+        )
     else:
-        if not _settings.smart_view.enabled:
-            # Smart View disabled in settings — original flat-table behavior, unchanged
-            _render_result_table(display_results, widget_key="flat_table")
+        st.info("No scans yet — click **Scan Now** to run your first scan.")
+elif not display_results:
+    st.info("No results match your current min-score filter — try lowering it.")
+else:
+    if not _settings.smart_view.enabled:
+        # Smart View disabled in settings — original flat-table behavior, unchanged
+        _render_result_table(display_results, widget_key="flat_table")
+    else:
+        smart_config = _settings.to_scanner_config().smart_view
+        buckets = bucket_results(display_results, smart_config)
+        _warn_if_correlated(buckets[Bucket.SUPER_STRONG] + buckets[Bucket.STRONG])
+
+        # Super Strong and Strong are the prominent, always-open sections —
+        # now rendered as reticle-card grids (not tables), the direct,
+        # visible answer to "it all looks the same" — a featured, small
+        # set of results is where the signature card style is actually
+        # seen and felt, not buried behind a native table's own styling.
+        super_strong = buckets[Bucket.SUPER_STRONG]
+        st.markdown(f'<div class="mono-label" style="margin-top:8px">{BUCKET_LABELS[Bucket.SUPER_STRONG]} ({len(super_strong)})</div>', unsafe_allow_html=True)
+        if super_strong:
+            _render_reticle_grid(super_strong, widget_key="bucket_super_strong")
         else:
-            smart_config = _settings.to_scanner_config().smart_view
-            buckets = bucket_results(display_results, smart_config)
-            _warn_if_correlated(buckets[Bucket.SUPER_STRONG] + buckets[Bucket.STRONG])
+            st.markdown(
+                '<div class="empty-state-card"><div class="empty-state-icon">🔥</div>'
+                '<div class="empty-state-text">No Super Strong setups this scan — this bucket is '
+                'intentionally selective, an empty result here is normal, not an error.</div></div>',
+                unsafe_allow_html=True,
+            )
 
-            # Super Strong and Strong are the prominent, always-open sections —
-            # this is what "make Super Strong and Strong most prominent" means
-            # concretely: they render first, always expanded, with a visible
-            # count even when empty (empty Super Strong is the EXPECTED normal
-            # case most scans, not an error — "very selective" means usually zero).
-            super_strong = buckets[Bucket.SUPER_STRONG]
-            st.markdown(f'<div class="mono-label" style="margin-top:8px">{BUCKET_LABELS[Bucket.SUPER_STRONG]} ({len(super_strong)})</div>', unsafe_allow_html=True)
-            if super_strong:
-                _render_result_table(super_strong, widget_key="bucket_super_strong", score_bar_color="green")
-            else:
-                st.markdown(
-                    '<div class="empty-state-card"><div class="empty-state-icon">🔥</div>'
-                    '<div class="empty-state-text">No Super Strong setups this scan — this bucket is '
-                    'intentionally selective, an empty result here is normal, not an error.</div></div>',
-                    unsafe_allow_html=True,
-                )
+        strong = buckets[Bucket.STRONG]
+        st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
+        if strong:
+            _render_reticle_grid(strong, widget_key="bucket_strong")
+        else:
+            st.markdown(
+                '<div class="empty-state-card"><div class="empty-state-icon">—</div>'
+                '<div class="empty-state-text">No results in this bucket right now.</div></div>',
+                unsafe_allow_html=True,
+            )
 
-            strong = buckets[Bucket.STRONG]
-            st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.STRONG]} ({len(strong)})</div>', unsafe_allow_html=True)
-            if strong:
-                _render_result_table(strong, widget_key="bucket_strong", score_bar_color="green")
-            else:
-                st.markdown(
-                    '<div class="empty-state-card"><div class="empty-state-icon">—</div>'
-                    '<div class="empty-state-text">No results in this bucket right now.</div></div>',
-                    unsafe_allow_html=True,
-                )
+        building = buckets[Bucket.BUILDING]
+        if building:
+            st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
+            _render_result_table(building, widget_key="bucket_building", score_bar_color="#fbbf24")
 
-            building = buckets[Bucket.BUILDING]
-            if building:
-                st.markdown(f'<div class="mono-label" style="margin-top:20px">{BUCKET_LABELS[Bucket.BUILDING]} ({len(building)})</div>', unsafe_allow_html=True)
-                _render_result_table(building, widget_key="bucket_building", score_bar_color="#fbbf24")
+        # High Risk / Low Conviction — deliberately less prominent, collapsed
+        # by default, matching "should be less prominent or collapsed"
+        high_risk = buckets[Bucket.HIGH_RISK_LOW_CONVICTION]
+        if high_risk:
+            with st.expander(f"{BUCKET_LABELS[Bucket.HIGH_RISK_LOW_CONVICTION]} ({len(high_risk)}) — click to expand", expanded=False):
+                _render_result_table(high_risk, widget_key="bucket_high_risk", score_bar_color="red")
 
-            # High Risk / Low Conviction — deliberately less prominent, collapsed
-            # by default, matching "should be less prominent or collapsed"
-            high_risk = buckets[Bucket.HIGH_RISK_LOW_CONVICTION]
-            if high_risk:
-                with st.expander(f"{BUCKET_LABELS[Bucket.HIGH_RISK_LOW_CONVICTION]} ({len(high_risk)}) — click to expand", expanded=False):
-                    _render_result_table(high_risk, widget_key="bucket_high_risk", score_bar_color="red")
-
-            # Full detailed table always stays available, per the explicit
-            # "keep the ability to see the full detailed table if needed"
-            # requirement — collapsed by default so it doesn't compete with
-            # the bucketed view above, but never removed.
-            with st.expander(f"View full ranked table ({len(display_results)} results, ungrouped)", expanded=False):
-                _render_result_table(display_results, widget_key="full_flat_table")
+        # Full detailed table always stays available, per the explicit
+        # "keep the ability to see the full detailed table if needed"
+        # requirement — collapsed by default so it doesn't compete with
+        # the bucketed view above, but never removed.
+        with st.expander(f"View full ranked table ({len(display_results)} results, ungrouped)", expanded=False):
+            _render_result_table(display_results, widget_key="full_flat_table")
 
 # ----------------------------------------------------------------- detail modal
 
