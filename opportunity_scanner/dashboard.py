@@ -176,6 +176,68 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 /* Section headers */
 .section-h { font-family: 'Playfair Display', serif; font-size: 20px; color: var(--white); margin-bottom: 4px; }
 
+/* Reticle cards — the signature element, adapted directly from
+   autobotpro.trading's own product-screenshot cards (bracket corners +
+   a status pill + a real footer readout), not a generic rounded box.
+   Sharper corners (4px) than metric-card's 12px on purpose — the
+   bracket motif reads as a targeting/scanning device, which only
+   works with a harder edge, not a soft one. */
+.reticle-card {
+    position: relative; background: rgba(245,244,240,0.03); border: 1px solid var(--border);
+    border-radius: 4px; padding: 20px 22px; transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.reticle-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.reticle-corner { position: absolute; width: 12px; height: 12px; pointer-events: none; }
+.reticle-corner.tl { top: -1px; left: -1px; border-top: 1.5px solid var(--gold); border-left: 1.5px solid var(--gold); }
+.reticle-corner.tr { top: -1px; right: -1px; border-top: 1.5px solid var(--gold); border-right: 1.5px solid var(--gold); }
+.reticle-corner.bl { bottom: -1px; left: -1px; border-bottom: 1.5px solid var(--gold); border-left: 1.5px solid var(--gold); }
+.reticle-corner.br { bottom: -1px; right: -1px; border-bottom: 1.5px solid var(--gold); border-right: 1.5px solid var(--gold); }
+.reticle-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.reticle-title { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--gray-mid); }
+.reticle-status { font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.05em; display: flex; align-items: center; gap: 5px; }
+.reticle-status::before { content: '●'; font-size: 7px; }
+.reticle-status.status-ready { color: var(--green); }
+.reticle-status.status-caution { color: var(--amber); }
+.reticle-status.status-building { color: var(--gray); }
+.reticle-status.status-live { color: var(--green); }
+.reticle-footer {
+    font-family: 'DM Mono', monospace; font-size: 10px; color: var(--gray);
+    margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between;
+}
+
+/* Dotted divider with a status readout in the middle — matching
+   autobotpro.trading's own section-break pattern
+   (⋮⋮⋮ ● AUTOBOT ENGINE — ONLINE ⋮⋮⋮), used here between the hero and
+   the rest of the page, not decoratively repeated everywhere. */
+.dotted-divider {
+    display: flex; align-items: center; gap: 16px; margin: 28px 0;
+    font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--gray); white-space: nowrap;
+}
+.dotted-divider::before, .dotted-divider::after {
+    content: ''; flex: 1; height: 1px;
+    background-image: linear-gradient(90deg, var(--border-strong) 1px, transparent 1px);
+    background-size: 6px 1px;
+}
+.dotted-divider .divider-dot { color: var(--green); }
+
+/* Hero strip — the actual restructure: this is now the FIRST thing
+   seen after the top bar, replacing a raw coin-count caption as the
+   opening beat. Real counts, not a generic "big number + small label"
+   template — three real classifications side by side, so the most
+   important question ("what's actually worth looking at right now")
+   is answered before any administrative info. */
+.hero-strip { padding: 4px 0 8px 0; }
+.hero-counts { display: flex; align-items: baseline; gap: 36px; flex-wrap: wrap; }
+.hero-count-item { display: flex; align-items: baseline; gap: 10px; }
+.hero-count-num { font-family: 'Playfair Display', serif; font-size: 44px; line-height: 1; }
+.hero-count-num.n-ready { color: var(--green); }
+.hero-count-num.n-caution { color: var(--amber); }
+.hero-count-num.n-building { color: var(--gray-mid); }
+.hero-count-label { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--gray); }
+.hero-sub { font-family: 'DM Sans', sans-serif; font-size: 13px; color: var(--gray-mid); margin-top: 10px; }
+
 hr { border-color: var(--border); }
 
 /* Login gate */
@@ -425,6 +487,56 @@ def _scan_loading_html(label: str = "Scanning") -> str:
     """
 
 
+def _render_hero_strip(results: list[ScanResult]):
+    """
+    The actual restructure — this is now the first thing seen after the
+    top bar, replacing a raw "18 coins" caption as the opening beat.
+    Real classification counts (via the same classify_readiness already
+    used everywhere else — no separate, second definition of "Ready"),
+    not a fabricated headline number. Empty-state (no scan yet) gets its
+    own honest, quiet message rather than showing "0 · 0 · 0", which
+    would misleadingly look like a completed scan that found nothing.
+    """
+    if not results:
+        st.markdown(
+            '<div class="hero-strip">'
+            '<div style="font-family:Playfair Display,serif;font-size:32px;color:#f5f4f0">No scan yet</div>'
+            '<div class="hero-sub">Run a scan to see what\'s Ready, in Caution, or still Building right now.</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        return
+
+    ready_ct = caution_ct = building_ct = 0
+    for r in results:
+        label = classify_readiness(r)["label"]
+        if label == "Ready":
+            ready_ct += 1
+        elif label == "Caution":
+            caution_ct += 1
+        else:
+            building_ct += 1
+
+    regime_label = results[0].regime_label if results[0].regime_label else "Neutral"
+    regime_note = {
+        "Risk-On": "BTC is healthy — bullish scores taken at face value.",
+        "Neutral": "BTC is neither clearly healthy nor unhealthy.",
+        "Risk-Off": "BTC looks unhealthy — bullish scores elsewhere are being scrutinized.",
+    }.get(regime_label, "")
+
+    st.markdown(
+        f'<div class="hero-strip">'
+        f'<div class="hero-counts">'
+        f'<div class="hero-count-item"><span class="hero-count-num n-ready">{ready_ct}</span><span class="hero-count-label">Ready</span></div>'
+        f'<div class="hero-count-item"><span class="hero-count-num n-caution">{caution_ct}</span><span class="hero-count-label">Caution</span></div>'
+        f'<div class="hero-count-item"><span class="hero-count-num n-building">{building_ct}</span><span class="hero-count-label">Building</span></div>'
+        f'</div>'
+        f'<div class="hero-sub">{regime_label} regime — {regime_note}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def run_scan(settings, mode: str, universe: list[str]) -> list[ScanResult]:
     return asyncio.run(_run_scan_async(settings, mode, universe))
 
@@ -617,6 +729,12 @@ with top_r:
             )
     with c3:
         scan_clicked = st.button("⟳ Scan Now", width='stretch', disabled=not _access.allowed)
+
+_render_hero_strip(st.session_state.results)
+st.markdown(
+    '<div class="dotted-divider"><span class="divider-dot">●</span> LIVE FROM HYPERLIQUID · COINGECKO · COINBASE · KRAKEN</div>',
+    unsafe_allow_html=True,
+)
 
 if st.session_state.universe_preset == "🔥 Trending Now":
     if "trending_universe_cache" not in st.session_state:
@@ -1026,16 +1144,17 @@ with left:
 @st.dialog("Coin Detail", width="large")
 def show_detail(result: ScanResult):
     readiness = classify_readiness(result)
-    readiness_color = {"Ready": "#4ade80", "Caution": "#fbbf24", "Building": "#8c8c89"}.get(readiness["label"], "#8c8c89")
+    status_cls = {"Ready": "status-ready", "Caution": "status-caution", "Building": "status-building"}.get(readiness["label"], "status-building")
+    direction_suffix = (" — " + ("Long" if readiness["direction"] == "bullish" else "Short")) if readiness["label"] == "Ready" else ""
     st.markdown(
-        f'<div style="background:rgba(255,255,255,0.03);border:1px solid {readiness_color}40;border-radius:12px;'
-        f'box-shadow:0 1px 2px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.24);'
-        f'padding:12px 16px;margin-bottom:16px">'
-        f'<div style="font-family:DM Mono,monospace;font-size:15px;font-weight:600;color:{readiness_color}">'
-        f'{READINESS_INDICATOR.get(readiness["label"], "🔧")} {readiness["label"]}'
-        f'{" — " + ("Long" if readiness["direction"] == "bullish" else "Short") if readiness["label"] == "Ready" else ""}'
+        f'<div class="reticle-card" style="margin-bottom:16px">'
+        f'<span class="reticle-corner tl"></span><span class="reticle-corner tr"></span>'
+        f'<span class="reticle-corner bl"></span><span class="reticle-corner br"></span>'
+        f'<div class="reticle-header">'
+        f'<span class="reticle-title">Readiness</span>'
+        f'<span class="reticle-status {status_cls}">{readiness["label"]}{direction_suffix}</span>'
         f'</div>'
-        f'<div style="font-family:DM Sans,sans-serif;font-size:13px;color:#b8b7b2;margin-top:4px">{readiness["explanation"]}</div>'
+        f'<div style="font-family:DM Sans,sans-serif;font-size:13px;color:#b8b7b2;line-height:1.6">{readiness["explanation"]}</div>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -1043,11 +1162,13 @@ def show_detail(result: ScanResult):
     hot_now = classify_hot_now(result)
     if hot_now["is_hot"]:
         st.markdown(
-            f'<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(251,191,36,0.08);'
-            f'border:1px solid rgba(251,191,36,0.3);border-radius:8px;padding:6px 12px;margin-bottom:16px;'
-            f'font-family:DM Mono,monospace;font-size:12px;color:#fbbf24">'
-            f'⚡ Hot Now — {hot_now["timeframe"]} score {hot_now["score"]:.0f}, genuinely strong right now on its '
-            f'own terms, independent of whether longer timeframes agree yet'
+            f'<div class="reticle-card" style="margin-bottom:16px;padding:14px 18px">'
+            f'<span class="reticle-corner tl"></span><span class="reticle-corner tr"></span>'
+            f'<span class="reticle-corner bl"></span><span class="reticle-corner br"></span>'
+            f'<div class="reticle-header" style="margin-bottom:0">'
+            f'<span class="reticle-title">Hot Now</span>'
+            f'<span class="reticle-status status-live">{hot_now["timeframe"]} · {hot_now["score"]:.0f}</span>'
+            f'</div>'
             f'</div>',
             unsafe_allow_html=True,
         )

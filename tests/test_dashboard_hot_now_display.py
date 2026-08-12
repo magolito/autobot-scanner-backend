@@ -90,7 +90,7 @@ def main():
 
         markdown_texts = " ".join(m.value for m in at.markdown)
         assert "Building" in markdown_texts, "Expected the readiness verdict (Building) to show"
-        assert "Hot Now" in markdown_texts and "15m score 88" in markdown_texts, "Expected the distinct Hot Now badge with real numbers to show"
+        assert "Hot Now" in markdown_texts and "15m" in markdown_texts and "88" in markdown_texts, "Expected the distinct Hot Now reticle badge with real numbers to show"
         print("2. Detail modal shows both the readiness verdict card AND a distinct Hot Now badge with real numbers, not merged into one label: OK")
 
         print("\n✅ Dashboard Hot Now display test passed: the actual feature request (both 'strong now' and 'strong across timeframes' shown together) reaches the real running dashboard.")
