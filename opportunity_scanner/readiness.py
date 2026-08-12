@@ -34,6 +34,46 @@ from .models import ScanResult
 # sync with what Super Strong actually requires.
 READINESS_ALIGNMENT_THRESHOLD = 60.0
 
+# "Hot Now" — the shortest available timeframe's own score needs to be
+# genuinely strong on its own terms, not just "above neutral." 70 is
+# deliberately a notch above the Signal system's "Buy" threshold (65),
+# since this is meant to flag something distinctive worth noticing
+# immediately, not a routine, common occurrence.
+HOT_NOW_THRESHOLD = 70.0
+HOT_NOW_TIMEFRAME_PREFERENCE = ["15m", "1h", "4h", "1d"]  # shortest-first
+
+
+def classify_hot_now(result: ScanResult) -> dict:
+    """
+    Deliberately separate from Ready/Building/Caution — answers a
+    genuinely different question. Readiness asks "does this have real,
+    multi-timeframe-confirmed conviction" (built to filter out noise,
+    weighted toward longer timeframes). Hot Now asks "is this moving
+    RIGHT NOW, on its own terms" — the shortest available timeframe's
+    own score, with no requirement that longer timeframes agree.
+
+    Both can be true or false independently, and that's the whole
+    point: a coin can be Hot Now + Building (a fresh short-term spike
+    that hasn't been confirmed across longer timeframes yet — worth
+    watching closely, not yet worth full conviction) or Ready without
+    being Hot Now (a genuine, broadly-confirmed setup that isn't
+    necessarily explosive today specifically). Collapsing these into
+    one label would lose real information either way.
+
+    Returns {"is_hot", "timeframe", "score"} — timeframe/score are None
+    when momentum data isn't available, matching the honest-unavailable
+    pattern used throughout this pillar rather than a false negative.
+    """
+    momentum = result.factors.get("momentum")
+    if not momentum or not momentum.available:
+        return {"is_hot": False, "timeframe": None, "score": None}
+    per_tf = (momentum.raw or {}).get("per_timeframe", {}) or {}
+    for tf in HOT_NOW_TIMEFRAME_PREFERENCE:
+        if tf in per_tf and per_tf[tf] is not None:
+            score = per_tf[tf]
+            return {"is_hot": score >= HOT_NOW_THRESHOLD, "timeframe": tf, "score": score}
+    return {"is_hot": False, "timeframe": None, "score": None}
+
 
 def _momentum_info(result: ScanResult) -> dict:
     momentum = result.factors.get("momentum")

@@ -54,7 +54,7 @@ from opportunity_scanner.config import UNIVERSE_PRESETS, DEFAULT_UNIVERSE_PRESET
 from opportunity_scanner.storage import ScanStorage
 from opportunity_scanner.models import ScanResult, FactorResult
 from opportunity_scanner.smart_view import Bucket, bucket_results, BUCKET_LABELS, data_completeness
-from opportunity_scanner.readiness import classify_readiness
+from opportunity_scanner.readiness import classify_readiness, classify_hot_now
 from opportunity_scanner.track_record import compute_track_record
 
 # ----------------------------------------------------------------- page setup
@@ -825,10 +825,13 @@ def _build_rows(results: list[ScanResult]) -> pd.DataFrame:
         if readiness["label"] == "Ready":
             side = "Long" if readiness["direction"] == "bullish" else "Short"
             setup_text = f"Ready ({side})"
+        hot_now = classify_hot_now(r)
+        hot_text = f"⚡ Hot ({hot_now['timeframe']})" if hot_now["is_hot"] else "—"
         rows.append({
             "Rank": i, "Symbol": r.base, "Score": r.composite_score,
             "Signal": f"{SIGNAL_INDICATOR.get(r.signal, '⚪')} {r.signal}",
             "Setup": f"{READINESS_INDICATOR.get(readiness['label'], '🔧')} {setup_text}",
+            "Hot Now": hot_text,
             "Confidence": r.confidence, "Strength": f["strength"].score if f["strength"].available else None,
             "OI": f["oi_dynamics"].score if f["oi_dynamics"].available else None,
             "Momentum": f["momentum"].score if f["momentum"].available else None,
@@ -914,6 +917,13 @@ def _render_result_table(results: list[ScanResult], widget_key: str, score_bar_c
                      "positioning — an active setup. ⚠️ Caution: timeframes agree, but OI is moving against the "
                      "move (covering/liquidation, not fresh conviction). 🔧 Building: structure still forming, "
                      "not confirmed yet. Open a coin's detail view for the full reasoning.",
+            ),
+            "Hot Now": st.column_config.TextColumn(
+                help="Deliberately separate from Setup — this asks a different question: is the SHORTEST "
+                     "available timeframe genuinely strong right now, on its own, regardless of whether longer "
+                     "timeframes agree yet. A coin can be Hot Now + Building (a fresh spike not yet broadly "
+                     "confirmed) or Ready without being Hot Now (a real setup, just not explosive today "
+                     "specifically) — both are meaningful, different signals.",
             ),
             "Risk": st.column_config.TextColumn(
                 help="Low Risk: top 100 by market cap. Medium Risk: ranked 101-300. High Risk: outside the top "
@@ -1028,6 +1038,18 @@ def show_detail(result: ScanResult):
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    hot_now = classify_hot_now(result)
+    if hot_now["is_hot"]:
+        st.markdown(
+            f'<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(251,191,36,0.08);'
+            f'border:1px solid rgba(251,191,36,0.3);border-radius:8px;padding:6px 12px;margin-bottom:16px;'
+            f'font-family:DM Mono,monospace;font-size:12px;color:#fbbf24">'
+            f'⚡ Hot Now — {hot_now["timeframe"]} score {hot_now["score"]:.0f}, genuinely strong right now on its '
+            f'own terms, independent of whether longer timeframes agree yet'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     top1, top2 = st.columns([1, 2])
     with top1:
