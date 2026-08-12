@@ -36,6 +36,22 @@ class AccessDecision(BaseModel):
                                                      # display, not just what functional limits apply
 
 
+def get_effective_plan(user: User, admin_emails: Optional[list[str]] = None) -> PlanTier:
+    """
+    The single source of truth for the admin-override check — extracted
+    directly after finding a THIRD place that needed this exact logic
+    (billing_ui.py's "Account & Billing" section still showed "Free"
+    after the dashboard's own top-level label was already fixed, since
+    it read user.plan directly too). Three separate places needing the
+    identical check is the actual signal this belongs in one function,
+    not copy-pasted — the next place that needs it imports this instead
+    of re-implementing the comparison a fourth time.
+    """
+    if admin_emails and user.email.lower() in {e.lower() for e in admin_emails}:
+        return PlanTier.ELITE
+    return user.plan
+
+
 def check_scanner_access(user: User, scanner: str, storage: AppStorage, admin_emails: Optional[list[str]] = None) -> AccessDecision:
     """
     Call this BEFORE running a scan or showing results — not just before
@@ -54,7 +70,7 @@ def check_scanner_access(user: User, scanner: str, storage: AppStorage, admin_em
     flag, so it can't accidentally get included in a backup/restore or
     granted to the wrong account through a UI mistake.
     """
-    effective_plan = PlanTier.ELITE if admin_emails and user.email.lower() in {e.lower() for e in admin_emails} else user.plan
+    effective_plan = get_effective_plan(user, admin_emails)
     display_name = SCANNER_DISPLAY_NAMES.get(scanner, scanner)
     access_level = has_scanner_access(effective_plan, scanner)
     limit = max_scans_per_day(effective_plan, scanner)

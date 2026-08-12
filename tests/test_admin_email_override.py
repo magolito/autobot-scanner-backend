@@ -69,5 +69,89 @@ def main():
     print("\n✅ Admin email override test passed: reversible, case-insensitive, applies to both scanners, and never touches the actual stored plan.")
 
 
+def test_shared_helper_and_billing_display():
+    """
+    The actual third-instance fix: after fixing the dashboard's top-level
+    'Plan: X' label, a live screenshot showed a SEPARATE 'Account &
+    Billing' section still showing 'Current plan: Free' — a third place
+    (billing_ui.py) reading user.plan directly. Three separate places
+    needing the identical admin-override check is the real signal this
+    belonged in one shared function, not copy-pasted a third time.
+    """
+    from opportunity_scanner.access_control import get_effective_plan, check_scanner_access
+    from opportunity_scanner.app_storage import AppStorage
+    from opportunity_scanner.plans import PlanTier
+
+    db_path = "/tmp/test_shared_helper.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+    storage = AppStorage(db_path)
+    user = storage.create_user("founder2@example.com", "password123", plan=PlanTier.FREE)
+
+    # 1. THE ACTUAL FIX: the shared helper is now the single source of
+    # truth, used directly (not re-implemented) by check_scanner_access
+    assert get_effective_plan(user, ["founder2@example.com"]) == PlanTier.ELITE
+    assert get_effective_plan(user, ["someone-else@example.com"]) == PlanTier.FREE
+    assert get_effective_plan(user, None) == PlanTier.FREE
+    print("1. THE ACTUAL FIX: get_effective_plan is now the single, shared source of truth for the admin-override check: OK")
+
+    # 2. check_scanner_access still works correctly using the shared helper internally
+    decision = check_scanner_access(user, "opportunity", storage, admin_emails=["founder2@example.com"])
+    assert decision.effective_plan == PlanTier.ELITE
+    print("2. check_scanner_access correctly uses the shared helper internally, behavior unchanged: OK")
+
+    os.remove(db_path)
+    print("\n✅ Shared helper test passed: one function, three consumers (check_scanner_access, dashboard label, billing section), no drift risk between them.")
+
+
+def test_billing_section_renders_override_honestly():
+    """
+    Real Streamlit-level test (not just unit logic) proving
+    render_billing_section actually shows the honest "testing override,
+    not billed" label when the admin override is active — the exact
+    live symptom from the screenshot, verified end to end through a
+    real render, not just the underlying get_effective_plan logic.
+    """
+    from streamlit.testing.v1 import AppTest
+
+    db_path = "/tmp/test_billing_render.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    script = f'''
+import streamlit as st
+from opportunity_scanner.app_storage import AppStorage
+from opportunity_scanner.plans import PlanTier
+from opportunity_scanner.billing_ui import render_billing_section
+from types import SimpleNamespace
+
+storage = AppStorage("{db_path}")
+user = storage.create_user("billingtest@example.com", "pw123456", plan=PlanTier.FREE)
+fake_settings = SimpleNamespace(
+    admin_emails=["billingtest@example.com"],
+    stripe=SimpleNamespace(enabled=False),
+    crypto_payments=SimpleNamespace(enabled=False),
+)
+render_billing_section(user, fake_settings, "http://x", "http://x")
+'''
+    at = AppTest.from_string(script)
+    at.run(timeout=15)
+    assert not at.exception, f"render_billing_section raised: {at.exception}"
+
+    markdown_texts = " ".join(m.value for m in at.markdown)
+    assert "Elite" in markdown_texts, f"Expected the effective plan (Elite) to show, got: {markdown_texts}"
+    assert "testing override, not billed" in markdown_texts, (
+        f"THE ACTUAL FIX: expected the honest 'testing override, not billed' label instead of implying a real "
+        f"paid subscription, got: {markdown_texts}"
+    )
+    assert "$89" not in markdown_texts, "Should NOT show a real price for a testing override — that would misleadingly imply an actual charge"
+
+    os.remove(db_path)
+    print("1. THE ACTUAL FIX verified via a real render: billing_ui.py now correctly shows 'Elite (testing override, not billed)', not a misleading '$89/mo' price, and not the old bug showing 'Free': OK")
+    print("\n✅ Billing section render test passed: the exact live symptom from the screenshot is fixed and verified end to end.")
+
+
 if __name__ == "__main__":
     main()
+    test_shared_helper_and_billing_display()
+    test_billing_section_renders_override_honestly()

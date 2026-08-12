@@ -24,6 +24,7 @@ import streamlit as st
 
 from .app_storage import User
 from .plans import PlanTier, PLAN_CONFIG
+from .access_control import get_effective_plan
 from . import billing_stripe
 from . import billing_crypto
 
@@ -94,9 +95,20 @@ def render_billing_section(user: User, settings, success_url: str, cancel_url: s
     """
     st.markdown('<div class="mono-label">Billing</div>', unsafe_allow_html=True)
 
-    current_features = PLAN_CONFIG[user.plan]
-    price_display = "$0/mo" if current_features.price_usd_per_month == 0 else f"${current_features.price_usd_per_month:.0f}/mo"
-    st.markdown(f"Current plan: **{user.plan.value.title()}** ({price_display}) · Status: `{user.subscription_status}`")
+    admin_emails = getattr(settings, "admin_emails", None)
+    effective_plan = get_effective_plan(user, admin_emails)
+    is_admin_override = effective_plan != user.plan
+    current_features = PLAN_CONFIG[effective_plan]
+
+    if is_admin_override:
+        # Explicit, honest label — the actual fix for a live report:
+        # showing "Elite ($89/mo)" here would misleadingly imply a real
+        # paid subscription that doesn't exist. This is a testing
+        # override, not billing, and the UI should say so plainly.
+        st.markdown(f"Current plan: **{effective_plan.value.title()}** (testing override, not billed) · Status: `{user.subscription_status}`")
+    else:
+        price_display = "$0/mo" if current_features.price_usd_per_month == 0 else f"${current_features.price_usd_per_month:.0f}/mo"
+        st.markdown(f"Current plan: **{effective_plan.value.title()}** ({price_display}) · Status: `{user.subscription_status}`")
 
     if user.plan == PlanTier.ELITE:
         st.caption("You're on the highest tier — nothing to upgrade to.")
