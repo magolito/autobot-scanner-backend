@@ -103,6 +103,19 @@ class OpportunityScanner:
                 if not isinstance(ohlcv, Exception)
             }
 
+        # Diagnostic logging added directly from a live report: oi_dynamics
+        # shows unavailable for nearly every coin, every scan, but nothing
+        # in the logs explains WHY for regular (non-meme) coins — no
+        # explicit OI fetch failure is ever logged for them, unlike meme
+        # coins where "does not have market symbol" is clear. This
+        # exposes the actual raw values feeding the availability check
+        # directly, so the next real scan's logs answer the question
+        # definitively instead of guessing further from indirect evidence.
+        print(
+            f"[scanner] {base} OI inputs: open_interest_usd={snap.open_interest_usd}, "
+            f"funding_rate={snap.funding_rate}, long_short_ratio={snap.long_short_ratio}"
+        )
+
         factors = {
             "strength": compute_strength(snap, btc_snapshot, sector_bases, sector_snapshots),
             "oi_dynamics": compute_oi_dynamics(snap, price_change_24h_pct),
