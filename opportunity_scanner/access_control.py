@@ -30,6 +30,10 @@ class AccessDecision(BaseModel):
     scans_used_today: int = 0
     scans_remaining_today: Optional[int] = None   # None = unlimited
     max_results_shown: Optional[int] = None         # None = full list; only meaningful for scanner="opportunity" today
+    effective_plan: Optional[PlanTier] = None       # real fix for a confirmed bug: the dashboard's "Plan: X" label
+                                                     # was reading user.plan directly, bypassing the admin_emails
+                                                     # override entirely — this exposes what the UI should actually
+                                                     # display, not just what functional limits apply
 
 
 def check_scanner_access(user: User, scanner: str, storage: AppStorage, admin_emails: Optional[list[str]] = None) -> AccessDecision:
@@ -64,6 +68,7 @@ def check_scanner_access(user: User, scanner: str, storage: AppStorage, admin_em
             allowed=False,
             reason=f"The {display_name} isn't included in your {effective_plan.value.title()} plan. Upgrade to unlock it.",
             scans_used_today=used, scans_remaining_today=0, max_results_shown=max_results,
+            effective_plan=effective_plan,
         )
 
     if limit is not None and used >= limit:
@@ -71,10 +76,12 @@ def check_scanner_access(user: User, scanner: str, storage: AppStorage, admin_em
             allowed=False,
             reason=f"You've used all {limit} of today's {display_name} scans on the {effective_plan.value.title()} plan. Upgrade for more, or check back tomorrow.",
             scans_used_today=used, scans_remaining_today=0, max_results_shown=max_results,
+            effective_plan=effective_plan,
         )
 
     return AccessDecision(
         allowed=True, scans_used_today=used, scans_remaining_today=remaining, max_results_shown=max_results,
+        effective_plan=effective_plan,
     )
 
 

@@ -31,7 +31,13 @@ def main():
     assert decision_opp.allowed is True
     assert decision_opp.max_results_shown is None, f"Expected unlimited results (Elite), got capped at {decision_opp.max_results_shown}"
     assert decision_opp.scans_remaining_today is None, f"Expected unlimited scans (Elite), got {decision_opp.scans_remaining_today}"
-    print("1. THE ACTUAL FIX: a Free-plan user's email listed in admin_emails gets full Elite access (unlimited scans, full results) for the Opportunity Scanner: OK")
+    assert decision_opp.effective_plan == PlanTier.ELITE, (
+        f"THE ACTUAL FIX for a real, confirmed bug: the dashboard's 'Plan: X' label was reading user.plan "
+        f"directly, bypassing the override entirely (a Free user with a working override still saw 'Plan: Free' "
+        f"and stayed functionally limited). effective_plan must be exposed so the UI can display the real plan, "
+        f"got {decision_opp.effective_plan}"
+    )
+    print("1. THE ACTUAL FIX: a Free-plan user's email listed in admin_emails gets full Elite access (unlimited scans, full results) AND effective_plan correctly exposed as ELITE for the UI to display: OK")
 
     decision_meme = check_scanner_access(user, "meme", storage, admin_emails=["founder@example.com"])
     assert decision_meme.allowed is True, "Meme scanner should also be unlocked (Free plan alone blocks it entirely)"

@@ -299,7 +299,8 @@ with top_r:
 remaining_display = "unlimited" if _access.scans_remaining_today is None else str(_access.scans_remaining_today)
 if not _access.allowed:
     st.warning(_access.reason)
-st.caption(f"Plan: **{_user.plan.value.title()}** · Meme Scanner scans remaining today: **{remaining_display}**")
+_display_plan = (_access.effective_plan or _user.plan).value.title()
+st.caption(f"Plan: **{_display_plan}** · Meme Scanner scans remaining today: **{remaining_display}**")
 
 # Quick safety overview
 all_results = st.session_state.meme_results

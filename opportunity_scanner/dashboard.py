@@ -720,7 +720,8 @@ if scan_clicked:
 remaining_display = "unlimited" if _access.scans_remaining_today is None else str(_access.scans_remaining_today)
 if not _access.allowed:
     st.warning(_access.reason)
-st.caption(f"Plan: **{_user.plan.value.title()}** · Scans remaining today: **{remaining_display}**"
+_display_plan = (_access.effective_plan or _user.plan).value.title()
+st.caption(f"Plan: **{_display_plan}** · Scans remaining today: **{remaining_display}**"
            + (f" · Results capped to top {_access.max_results_shown}" if _access.max_results_shown else ""))
 
 with st.expander(f"Account & Billing — {_user.email}"):
