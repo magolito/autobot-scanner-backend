@@ -44,7 +44,12 @@ def main():
         # substantially from the old, measured-too-restrictive value of 4
         source = ExchangeDataSource(ScannerConfig())
         actual_limit = source._hyperliquid_semaphore._value
-        assert actual_limit >= 15, f"Expected the semaphore limit to be substantially raised from the old value of 4, got {actual_limit}"
+        assert actual_limit >= 8, (
+            f"Expected the semaphore limit to be substantially raised from the old, measured-too-restrictive "
+            f"value of 4, got {actual_limit}. This value is expected to be iteratively tuned against real "
+            f"Hyperliquid rate-limit feedback (confirmed: 20 caused real 429s, dialed back to 12) — this check "
+            f"deliberately allows a range rather than one exact number, since further tuning is expected."
+        )
         print(f"1. THE ACTUAL FIX: Hyperliquid semaphore raised from 4 to {actual_limit} — real coin-level concurrency restored: OK")
         await source.close()
 
@@ -65,7 +70,7 @@ def main():
         ])
         old_elapsed = time.monotonic() - start
 
-        new_semaphore = asyncio.Semaphore(20)
+        new_semaphore = asyncio.Semaphore(actual_limit)
         start = time.monotonic()
         await asyncio.gather(*[
             _simulate_coin_fetch(new_semaphore, CALLS_PER_COIN, SIMULATED_CALL_LATENCY)
@@ -78,7 +83,8 @@ def main():
             f"got old={old_elapsed:.2f}s vs new={new_elapsed:.2f}s (only {new_elapsed/old_elapsed:.0%} of old time)"
         )
         print(f"2. Concretely measured with real elapsed wall-clock time under simulated latency: old semaphore(4) = {old_elapsed:.2f}s, "
-              f"new semaphore(20) = {new_elapsed:.2f}s ({new_elapsed/old_elapsed:.0%} of the old time) for the same realistic 17-coin x 7-call workload: OK")
+              f"new semaphore({actual_limit}, the actual currently configured value) = {new_elapsed:.2f}s ({new_elapsed/old_elapsed:.0%} of the old time) "
+              f"for the same realistic 17-coin x 7-call workload: OK")
 
     asyncio.run(run())
     print("\n✅ Hyperliquid semaphore concurrency test passed: the real fix verified both by the raised limit itself and by measuring actual elapsed time improvement under a realistic simulated workload.")

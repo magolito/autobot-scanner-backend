@@ -102,7 +102,20 @@ class ExchangeDataSource:
         # against Hyperliquid's real limits — watch for renewed 429s
         # after this deploys, and adjust down if they reappear (should
         # still be far better than the old serialization either way).
-        self._hyperliquid_semaphore = asyncio.Semaphore(20)
+        #
+        # UPDATE from real production feedback: 20 confirmed the fix
+        # itself was correct — a real log showed 13 coins completing in
+        # a tight concurrent burst with zero gaps, versus one every
+        # 8-20s before. But it also genuinely tripped Hyperliquid 429s
+        # for a handful of coins' OHLCV specifically (ETH, SOL, PUMP),
+        # which weren't there before. Dialed back to 12 as a middle
+        # ground — still far more real concurrency than the original 4,
+        # while pulling back from the point where 20 started genuinely
+        # exceeding Hyperliquid's own rate tolerance. This is an
+        # iterative tuning process against a real, external rate limit,
+        # not a one-shot fix — may need another adjustment based on
+        # what the next real scan shows.
+        self._hyperliquid_semaphore = asyncio.Semaphore(12)
         self._coingecko = CoinGeckoDerivativesProvider(api_key=getattr(config, "coingecko_api_key", None))
         self._us_spot = USSpotProvider()
         self._http = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
