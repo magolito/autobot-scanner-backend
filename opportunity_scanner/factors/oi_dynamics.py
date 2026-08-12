@@ -44,7 +44,7 @@ def _oi_change_pct(oi_history: pd.DataFrame) -> Optional[float]:
     return (end / start - 1.0) * 100.0
 
 
-def _divergence_score(price_change_pct: float, oi_change_pct: float) -> tuple[float, str]:
+def _divergence_score(price_change_pct: float, oi_change_pct: float) -> tuple[float, str, bool]:
     """
     The core read:
       price UP + OI UP     -> new longs entering, real conviction    (strong)
@@ -54,6 +54,12 @@ def _divergence_score(price_change_pct: float, oi_change_pct: float) -> tuple[fl
     We score for "trend is confirmed by fresh positioning," direction-agnostic,
     since this pillar measures conviction strength, not direction —
     direction itself comes from the Momentum pillar.
+
+    Returns (score, label, confirms) — confirms is the actual "is OI
+    backing this direction with real money" boolean, exposed as its own
+    clean field (not just buried in the text label) so downstream trade-
+    readiness logic can gate on it directly rather than re-parsing a
+    sentence.
     """
     aligned = (price_change_pct >= 0) == (oi_change_pct >= 0)
     magnitude = _normalize(abs(oi_change_pct), 0, 20)
@@ -70,7 +76,7 @@ def _divergence_score(price_change_pct: float, oi_change_pct: float) -> tuple[fl
             f"OI {oi_change_pct:+.1f}% moving AGAINST price ({price_change_pct:+.1f}%) "
             f"— move looks like covering/liquidation, not fresh conviction"
         )
-    return score, label
+    return score, label, aligned
 
 
 def _funding_score(funding_rate: Optional[float]) -> tuple[float, list[str]]:
@@ -124,36 +130,69 @@ def _oi_mcap_dampener(open_interest_usd: Optional[float], market_cap_usd: Option
 
 
 def compute_oi_dynamics(snap: MarketSnapshot, price_change_24h_pct: Optional[float]) -> FactorResult:
-    if snap.open_interest_history is None or price_change_24h_pct is None:
+    """
+    Resilient to partial data, deliberately — this pillar used to require
+    BOTH a computable OI change (2+ historical points) AND a 24h price
+    change just to produce anything at all. That was fine when Bybit was
+    the primary source (it provides real multi-point OI history), but
+    under the Hyperliquid/CoinGecko-first priority chain, those sources
+    only give a CURRENT OI snapshot, not history — meaning oi_change was
+    almost always None for exactly the sources now used most often. This
+    was a real, specific cause of "OI showing None for major coins," not
+    a network/fetch failure — the data was arriving, the pillar just
+    couldn't use it.
+
+    Now: funding rate and long/short ratio each already degrade
+    gracefully to a neutral default on their own (see _funding_score/
+    _long_short_score), so this pillar is only genuinely unavailable when
+    there's truly NOTHING — no current OI value, no funding, no
+    long/short ratio. If we have a current OI value but can't compute a
+    CHANGE (single-point history, or no comparable price move), we still
+    compute a real partial score from funding + long/short — "prefer
+    partial data over complete failure of a pillar," not a blanket bailout.
+    """
+    has_any_oi_signal = (
+        snap.open_interest_usd is not None
+        or snap.funding_rate is not None
+        or snap.long_short_ratio is not None
+    )
+    if not has_any_oi_signal:
         return FactorResult(
             name="oi_dynamics",
             score=50.0,
-            reasons=["No open interest data for this symbol (spot-only or unlisted on derivatives) — pillar excluded"],
+            reasons=["No open interest, funding, or long/short data from any source for this symbol — pillar excluded"],
             available=False,
         )
 
-    oi_change = _oi_change_pct(snap.open_interest_history)
+    oi_change = _oi_change_pct(snap.open_interest_history) if snap.open_interest_history is not None else None
     reasons: list[str] = []
 
-    if oi_change is None:
-        return FactorResult(
-            name="oi_dynamics",
-            score=50.0,
-            reasons=["Not enough OI history yet to compute change — neutral default"],
-            available=False,
-        )
-
-    div_score, div_note = _divergence_score(price_change_24h_pct, oi_change)
-    reasons.append(div_note)
-
     fund_score, fund_reasons = _funding_score(snap.funding_rate)
-    reasons.extend(fund_reasons)
-
     ls_score, ls_reasons = _long_short_score(snap.long_short_ratio)
-    reasons.extend(ls_reasons)
+    confirms_direction: Optional[bool] = None
 
-    # Divergence/confirmation is the dominant signal; funding & long-short are risk modifiers
-    composite = div_score * 0.60 + fund_score * 0.20 + ls_score * 0.20
+    if oi_change is not None and price_change_24h_pct is not None:
+        # Full signal available — original weighting, divergence dominant
+        div_score, div_note, confirms_direction = _divergence_score(price_change_24h_pct, oi_change)
+        reasons.append(div_note)
+        reasons.extend(fund_reasons)
+        reasons.extend(ls_reasons)
+        composite = div_score * 0.60 + fund_score * 0.20 + ls_score * 0.20
+    else:
+        # Partial signal — divergence isn't computable (typically: only a
+        # single current-snapshot OI point from Hyperliquid/CoinGecko, no
+        # historical delta), but funding + long/short still carry real
+        # information on their own. Redistribute divergence's weight
+        # across them rather than losing the whole pillar over one
+        # missing sub-component.
+        missing_reason = (
+            "insufficient OI history for a change calculation (only a current snapshot was available)"
+            if snap.open_interest_history is not None else "no OI history data available"
+        )
+        reasons.append(f"Price/OI divergence skipped — {missing_reason}; scoring from funding rate + long/short ratio only")
+        reasons.extend(fund_reasons)
+        reasons.extend(ls_reasons)
+        composite = fund_score * 0.5 + ls_score * 0.5
 
     dampener, dampener_notes = _oi_mcap_dampener(snap.open_interest_usd, snap.market_cap_usd)
     reasons.extend(dampener_notes)
@@ -163,6 +202,6 @@ def compute_oi_dynamics(snap: MarketSnapshot, price_change_24h_pct: Optional[flo
         name="oi_dynamics",
         score=round(_clamp(composite), 1),
         reasons=reasons,
-        raw={"oi_change_pct": oi_change, "div_score": div_score, "fund_score": fund_score, "ls_score": ls_score},
+        raw={"oi_change_pct": oi_change, "fund_score": fund_score, "ls_score": ls_score, "confirms_direction": confirms_direction},
         available=True,
     )
