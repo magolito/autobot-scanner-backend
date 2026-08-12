@@ -32,33 +32,44 @@ class AccessDecision(BaseModel):
     max_results_shown: Optional[int] = None         # None = full list; only meaningful for scanner="opportunity" today
 
 
-def check_scanner_access(user: User, scanner: str, storage: AppStorage) -> AccessDecision:
+def check_scanner_access(user: User, scanner: str, storage: AppStorage, admin_emails: Optional[list[str]] = None) -> AccessDecision:
     """
     Call this BEFORE running a scan or showing results — not just before
     rendering the "Scan Now" button. Every branch that returns
     allowed=False also sets a plain-language `reason` ready to show
     directly, so the caller never has to construct its own error copy
     (and can't accidentally show a technical/internal message instead).
+
+    admin_emails: an explicit, reversible testing/founder override —
+    added directly from "how do I test the full version without going
+    through billing." Listed emails get evaluated as PlanTier.ELITE for
+    this decision only; the user's actual stored `plan` in the database
+    is never touched, so nothing needs to be manually reset later, and
+    removing the email from the env var immediately reverts to their
+    real plan. Deliberately an env var (ADMIN_EMAILS), not a database
+    flag, so it can't accidentally get included in a backup/restore or
+    granted to the wrong account through a UI mistake.
     """
+    effective_plan = PlanTier.ELITE if admin_emails and user.email.lower() in {e.lower() for e in admin_emails} else user.plan
     display_name = SCANNER_DISPLAY_NAMES.get(scanner, scanner)
-    access_level = has_scanner_access(user.plan, scanner)
-    limit = max_scans_per_day(user.plan, scanner)
+    access_level = has_scanner_access(effective_plan, scanner)
+    limit = max_scans_per_day(effective_plan, scanner)
     used = storage.get_scan_count_today(user.id, scanner)
     remaining = None if limit is None else max(limit - used, 0)
-    features = get_plan_features(user.plan)
+    features = get_plan_features(effective_plan)
     max_results = features.opportunity_max_results_shown if scanner == "opportunity" else None
 
     if access_level == ScannerAccess.NONE:
         return AccessDecision(
             allowed=False,
-            reason=f"The {display_name} isn't included in your {user.plan.value.title()} plan. Upgrade to unlock it.",
+            reason=f"The {display_name} isn't included in your {effective_plan.value.title()} plan. Upgrade to unlock it.",
             scans_used_today=used, scans_remaining_today=0, max_results_shown=max_results,
         )
 
     if limit is not None and used >= limit:
         return AccessDecision(
             allowed=False,
-            reason=f"You've used all {limit} of today's {display_name} scans on the {user.plan.value.title()} plan. Upgrade for more, or check back tomorrow.",
+            reason=f"You've used all {limit} of today's {display_name} scans on the {effective_plan.value.title()} plan. Upgrade for more, or check back tomorrow.",
             scans_used_today=used, scans_remaining_today=0, max_results_shown=max_results,
         )
 

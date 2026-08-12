@@ -498,6 +498,21 @@ class Settings(BaseSettings):
     dashboard_password: Optional[str] = None
     stripe_secret_key: Optional[str] = None
     stripe_webhook_secret: Optional[str] = None
+
+    # Founder/testing override — added directly from "how do I test the
+    # full version without going through billing." Comma-separated list
+    # of emails (e.g. "you@example.com,teammate@example.com") that get
+    # treated as PlanTier.ELITE for access-control purposes only — the
+    # actual stored plan in the database is never touched. A raw string
+    # parsed here rather than a native List[str] field, to avoid any
+    # ambiguity in how pydantic-settings parses list-typed env vars.
+    admin_emails_raw: Optional[str] = Field(default=None, alias="ADMIN_EMAILS")
+
+    @property
+    def admin_emails(self) -> list[str]:
+        if not self.admin_emails_raw:
+            return []
+        return [e.strip() for e in self.admin_emails_raw.split(",") if e.strip()]
     nowpayments_api_key: Optional[str] = None
     nowpayments_ipn_secret: Optional[str] = None
 

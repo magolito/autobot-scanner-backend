@@ -551,7 +551,7 @@ except Exception as e:  # noqa: BLE001
 # hydrated results below (a Free user shouldn't see a full historical
 # result set just by reloading, even though it's cached in storage) and
 # by the Scan Now button further down.
-_access = check_scanner_access(_user, "opportunity", _app_storage)
+_access = check_scanner_access(_user, "opportunity", _app_storage, admin_emails=_settings.admin_emails)
 
 # Load the most recent scan per symbol on first render after a restart —
 # only once per session (the flag prevents re-querying storage on every
@@ -685,7 +685,7 @@ if scan_clicked:
     # Re-verify right at the point of action rather than trusting the
     # disabled= attribute computed a moment earlier — the disabled
     # button is a UX nicety, this recheck is the actual enforcement.
-    _recheck = check_scanner_access(_user, "opportunity", _app_storage)
+    _recheck = check_scanner_access(_user, "opportunity", _app_storage, admin_emails=_settings.admin_emails)
     if not _recheck.allowed:
         st.error(_recheck.reason)
     else:

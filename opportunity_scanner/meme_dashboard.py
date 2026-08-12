@@ -222,7 +222,7 @@ try:
 except Exception as e:  # noqa: BLE001
     render_fatal_error("Database connection error", f"Couldn't open storage at \"{_settings.meme_scanner.db_path}\".", exc=e)
 
-_access = check_scanner_access(_user, "meme", _app_storage)
+_access = check_scanner_access(_user, "meme", _app_storage, admin_emails=_settings.admin_emails)
 
 if has_scanner_access(_user.plan, "meme") == ScannerAccess.NONE:
     # NONE access (Free tier) — block the ENTIRE scanner, not just the
@@ -281,7 +281,7 @@ with top_r:
             # Re-verify right at the point of action, same reasoning as the
             # main dashboard — the disabled= attribute is a UX nicety, this
             # is the actual enforcement.
-            _recheck = check_scanner_access(_user, "meme", _app_storage)
+            _recheck = check_scanner_access(_user, "meme", _app_storage, admin_emails=_settings.admin_emails)
             if not _recheck.allowed:
                 st.error(_recheck.reason)
             else:
