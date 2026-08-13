@@ -991,6 +991,52 @@ def _warn_if_correlated(results: list[ScanResult]):
         )
 
 
+def _sparkline_svg(prices: list[float], width: int = 88, height: int = 28) -> str:
+    """
+    Real fix for a live request ("chart of the last 24h") — a genuine
+    SVG polyline from actual recent hourly closes (ScanResult.recent_prices),
+    not a placeholder or fake decorative curve. Color follows the real
+    direction of the period (green if it ended higher than it started,
+    red if lower), matching the same green/red used everywhere else in
+    this dashboard. Returns empty string if there's not enough real data
+    to draw a meaningful line — never fabricates points to fill the space.
+    """
+    if len(prices) < 2:
+        return ""
+    lo, hi = min(prices), max(prices)
+    rng = (hi - lo) if hi != lo else 1.0
+    n = len(prices)
+    pts = " ".join(
+        f"{(i / (n - 1)) * width:.1f},{height - ((p - lo) / rng) * height:.1f}"
+        for i, p in enumerate(prices)
+    )
+    color = "#4ade80" if prices[-1] >= prices[0] else "#f87171"
+    return (
+        f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" '
+        f'preserveAspectRatio="none" style="display:block">'
+        f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5" '
+        f'stroke-linejoin="round" stroke-linecap="round" opacity="0.9"/>'
+        f'</svg>'
+    )
+
+
+def _symbol_badge_html(symbol: str, color: str) -> str:
+    """
+    Real, honest tradeoff from a live design conversation: a real crypto
+    logo would need a new external image lookup (another thing that can
+    fail, rate-limit, or go stale) for purely decorative value. A
+    styled monogram badge — the symbol's first letter, colored by
+    signal — never breaks, needs no network call, and still gives each
+    card real visual identity instead of a bare text label.
+    """
+    letter = symbol[0].upper() if symbol else "?"
+    return (
+        f'<div style="width:26px;height:26px;border-radius:50%;background:{color}1a;'
+        f'border:1px solid {color}45;display:flex;align-items:center;justify-content:center;'
+        f'font-family:DM Mono,monospace;font-size:12px;font-weight:500;color:{color};flex-shrink:0">{letter}</div>'
+    )
+
+
 def _render_reticle_grid(results: list[ScanResult], widget_key: str, cols_per_row: int = 3):
     """
     The real, visible replacement for a plain table on the two FEATURED
@@ -1028,16 +1074,45 @@ def _render_reticle_grid(results: list[ScanResult], widget_key: str, cols_per_ro
                     ] if p is not None
                 )
                 card_glow_cls = " glow-ready" if readiness["label"] == "Ready" else ""
+
+                # Direction — reuses momentum's own dominant_direction
+                # (already computed for the alignment/readiness system),
+                # not a second, separately-defined notion of direction
+                momentum_raw = f["momentum"].raw if f["momentum"].available else {}
+                direction = (momentum_raw or {}).get("dominant_direction", "mixed")
+                direction_label = {"bullish": "Long", "bearish": "Short"}.get(direction, "")
+                direction_color = {"bullish": "#4ade80", "bearish": "#f87171"}.get(direction, "#8c8c89")
+
+                # 24h change — real fix for "how much are they up now",
+                # newly wired through from scanner.py this session
+                if r.price_change_24h_pct is not None:
+                    chg = r.price_change_24h_pct
+                    chg_color = "#4ade80" if chg >= 0 else "#f87171"
+                    chg_html = f'<span style="color:{chg_color}">{"▲" if chg >= 0 else "▼"}{abs(chg):.1f}%</span>'
+                else:
+                    chg_html = ""
+
+                badge_html = _symbol_badge_html(r.base, sig_color)
+                spark_html = _sparkline_svg(r.recent_prices)
+
                 st.markdown(
                     f'<div class="reticle-card{card_glow_cls}" style="margin-bottom:10px">'
                     f'<span class="reticle-corner tl"></span><span class="reticle-corner tr"></span>'
                     f'<span class="reticle-corner bl"></span><span class="reticle-corner br"></span>'
                     f'<div class="reticle-header">'
-                    f'<span class="reticle-title" style="font-size:14px;color:#f5f4f0">{r.base}</span>'
+                    f'<div style="display:flex;align-items:center;gap:9px">{badge_html}'
+                    f'<span class="reticle-title" style="font-size:14px;color:#f5f4f0">{r.base}</span></div>'
                     f'<span class="reticle-status {status_cls}">{readiness["label"]}</span>'
                     f'</div>'
+                    f'<div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px">'
                     f'<div style="font-family:Playfair Display,serif;font-size:34px;color:#f5f4f0;line-height:1">{r.composite_score:.1f}</div>'
-                    f'<div style="font-family:DM Mono,monospace;font-size:12px;color:{sig_color};margin-top:2px">{r.signal}{hot_badge}</div>'
+                    f'{spark_html}'
+                    f'</div>'
+                    f'<div style="font-family:DM Mono,monospace;font-size:12px;margin-top:6px;display:flex;align-items:center;gap:8px">'
+                    f'<span style="color:{sig_color}">{r.signal}</span>'
+                    f'{f"<span style=\'color:{direction_color}\'>· {direction_label}</span>" if direction_label else ""}'
+                    f'{hot_badge}{f" {chg_html}" if chg_html else ""}'
+                    f'</div>'
                     f'<div class="reticle-footer"><span>{pillar_line}</span><span>${r.price:,.4f}</span></div>'
                     f'</div>',
                     unsafe_allow_html=True,

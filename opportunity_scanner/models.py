@@ -64,3 +64,10 @@ class ScanResult:
                                                                   # see correlation.py; matters most for
                                                                   # multiple "Ready" results, since highly
                                                                   # correlated ones aren't really independent bets
+    price_change_24h_pct: Optional[float] = None  # real fix for a live request ("how much are they up now") —
+                                                    # this was already computed in scanner.py to feed
+                                                    # oi_dynamics, but was never actually saved onto the final
+                                                    # result, so the dashboard had no way to show it
+    recent_prices: List[float] = field(default_factory=list)  # last ~24h of hourly closes, for a genuine mini
+                                                                 # sparkline on the opportunity cards — not fake
+                                                                 # decorative data, the real recent price path

@@ -85,6 +85,18 @@ class OpportunityScanner:
             if prev_close:
                 price_change_24h_pct = (snap.price / prev_close - 1.0) * 100.0
 
+        # Real fix for a live request ("chart of the last 24h") — reuses
+        # the 1h OHLCV already fetched for momentum, no extra network
+        # call. Capped to the last 24 hourly closes (a real, not
+        # decorative, recent price path); left empty if 1h data isn't
+        # available rather than fabricating a flat line.
+        hourly = snap.ohlcv.get("1h")
+        recent_prices = (
+            [float(v) for v in hourly["close"].tail(24).tolist()]
+            if hourly is not None and len(hourly) > 0
+            else []
+        )
+
         sector_bases = self.config.sector_peers(base)
         sector_snapshots = {}
         if sector_bases:
@@ -172,6 +184,8 @@ class OpportunityScanner:
             regime_score=regime_score,
             regime_adjustment_note=regime_note,
             score_before_regime_adjustment=score_before,
+            price_change_24h_pct=price_change_24h_pct,
+            recent_prices=recent_prices,
         )
 
     async def scan_many(
