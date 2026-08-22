@@ -56,7 +56,6 @@ from opportunity_scanner.models import ScanResult, FactorResult
 from opportunity_scanner.smart_view import Bucket, bucket_results, BUCKET_LABELS, data_completeness
 from opportunity_scanner.readiness import classify_readiness, classify_hot_now
 from opportunity_scanner.track_record import compute_track_record
-from opportunity_scanner.publish_to_wi import publish_to_wi
 
 # ----------------------------------------------------------------- page setup
 
@@ -856,7 +855,6 @@ if scan_clicked:
             st.session_state.last_scan_time = datetime.now(timezone.utc)
             _storage.save_scan_results_sync(results)
             record_scan(_user, "opportunity", _app_storage)
-            publish_to_wi(results, universe=len(active_universe))
         except Exception as e:  # noqa: BLE001
             st.error(f"Scan failed: {e}")
         finally:
