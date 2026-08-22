@@ -54,20 +54,6 @@ def _factor_to_dict(f: FactorResult) -> dict:
     }
 
 
-def _readiness_fields(r: ScanResult) -> dict:
-    try:
-        from opportunity_scanner.readiness import classify_readiness
-        info = classify_readiness(r) or {}
-        raw = str(info.get("direction", "")).lower()
-        return {
-            "readiness": str(info.get("label", "Building")).lower(),
-            "direction": "long" if raw == "bullish" else "short" if raw == "bearish" else None,
-            "readiness_note": info.get("explanation", ""),
-        }
-    except Exception:
-        return {"readiness": "building", "direction": None, "readiness_note": ""}
-
-
 def _result_to_dict(r: ScanResult) -> dict:
     return {
         "symbol": r.symbol,
@@ -89,8 +75,6 @@ def _result_to_dict(r: ScanResult) -> dict:
         "weights_used": r.weights_used,
         "reasons_summary": r.reasons_summary,
         "factors": {name: _factor_to_dict(f) for name, f in r.factors.items()},
-        "price_change_24h_pct": r.price_change_24h_pct,
-        **_readiness_fields(r),
     }
 
 
@@ -165,27 +149,14 @@ async def nowpayments_webhook(request: Request):
     return {"received": True, "handled": result is not None, "detail": result}
 
 
-import os
-from fastapi import Header, HTTPException
-
-_WI_TOKEN = os.getenv("WI_ADMIN_TOKEN", "")
-
-
-def _require_token(x_wi_token):
-    if _WI_TOKEN and x_wi_token != _WI_TOKEN:
-        raise HTTPException(status_code=401, detail="Not authorised")
-
-
 @app.get("/scan")
 async def scan(
-    x_wi_token: str = Header(default=None),
     symbols: Optional[str] = Query(
         default=None,
         description="Comma-separated base symbols, e.g. BTC,ETH,SOL. Defaults to a starter universe.",
     ),
     min_score: float = Query(default=0.0, description="Only return coins scoring at or above this."),
 ):
-    _require_token(x_wi_token)
     bases = [s.strip().upper() for s in symbols.split(",")] if symbols else DEFAULT_UNIVERSE
     results = await _scanner.scan_many(bases, blacklist=_settings.universe.blacklist, whitelist=_settings.universe.whitelist)
     results = [r for r in results if r.composite_score >= min_score]
