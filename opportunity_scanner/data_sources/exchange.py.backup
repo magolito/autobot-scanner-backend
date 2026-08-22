@@ -115,7 +115,7 @@ class ExchangeDataSource:
         # iterative tuning process against a real, external rate limit,
         # not a one-shot fix — may need another adjustment based on
         # what the next real scan shows.
-        self._hyperliquid_semaphore = asyncio.Semaphore(5)
+        self._hyperliquid_semaphore = asyncio.Semaphore(12)
         self._coingecko = CoinGeckoDerivativesProvider(api_key=getattr(config, "coingecko_api_key", None))
         self._us_spot = USSpotProvider()
         self._http = httpx.AsyncClient(base_url=BYBIT_BASE_URL, timeout=10.0)
@@ -129,18 +129,6 @@ class ExchangeDataSource:
         self._scan_cycle_tasks: Optional[Dict[str, "asyncio.Task"]] = None
         self._scan_cycle_peer_ohlcv_tasks: Optional[Dict[str, "asyncio.Task"]] = None
         self._hyperliquid_markets_loaded = False
-
-    def _hyperliquid_supports(self, base: str) -> bool:
-        """load_markets() already told us what Hyperliquid lists. Asking
-        for SHIB/PEPE/FLOKI anyway costs four round trips per coin per
-        scan and returns nothing. If markets never loaded, assume yes and
-        let the normal fallback handle it."""
-        if not self._hyperliquid_markets_loaded:
-            return True
-        try:
-            return f"{base}/USDC:USDC" in (self._hyperliquid.markets or {})
-        except Exception:  # noqa: BLE001
-            return True
 
     async def close(self):
         await self.exchange.close()
@@ -166,8 +154,6 @@ class ExchangeDataSource:
     async def _fetch_ohlcv_from(self, source: str, base: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
         try:
             if source == "hyperliquid":
-                if not self._hyperliquid_supports(base):
-                    return None
                 async with self._hyperliquid_semaphore:
                     raw = await self._hyperliquid_breaker.call(lambda: self._hyperliquid.fetch_ohlcv(f"{base}/USDC:USDC", timeframe=timeframe, limit=limit), ignore_exceptions=(ccxt.BadSymbol,))
             elif source == "bybit":
