@@ -166,7 +166,7 @@ async def nowpayments_webhook(request: Request):
 
 
 import os
-from fastapi import Header, HTTPException, BackgroundTasks
+from fastapi import Header, HTTPException
 
 _WI_TOKEN = os.getenv("WI_ADMIN_TOKEN", "")
 
@@ -191,32 +191,6 @@ async def scan(
     results = [r for r in results if r.composite_score >= min_score]
     await _storage.save_scan_results(results)
     return {"count": len(results), "results": [_result_to_dict(r) for r in results]}
-
-
-@app.post("/scan/start")
-async def scan_start(
-    background_tasks: BackgroundTasks,
-    x_wi_token: str = Header(default=None),
-):
-    """Kick off a scan and return immediately. Serverless callers can't
-    wait minutes, so the work happens here and publishes itself."""
-    _require_token(x_wi_token)
-
-    async def _work():
-        try:
-            results = await _scanner.scan_many(
-                DEFAULT_UNIVERSE,
-                blacklist=_settings.universe.blacklist,
-                whitelist=_settings.universe.whitelist,
-            )
-            await _storage.save_scan_results(results)
-            from opportunity_scanner.publish_to_wi import publish_to_wi
-            publish_to_wi(results, universe=len(DEFAULT_UNIVERSE))
-        except Exception as exc:
-            print(f"[scan/start] failed: {exc}")
-
-    background_tasks.add_task(_work)
-    return {"ok": True, "started": True}
 
 
 @app.get("/scan/{symbol}")
