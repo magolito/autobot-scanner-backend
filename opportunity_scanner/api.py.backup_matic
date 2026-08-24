@@ -42,7 +42,7 @@ _degen_provider = DexScreenerProvider(cache_ttl_seconds=_settings.resilience.cac
 
 DEFAULT_UNIVERSE = [
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "DOGE", "AVAX", "LINK", "DOT",
-    "POL", "TON", "SUI", "NEAR", "APT", "ARB", "OP", "INJ", "TIA", "SEI",
+    "MATIC", "TON", "SUI", "NEAR", "APT", "ARB", "OP", "INJ", "TIA", "SEI",
 ]
 
 

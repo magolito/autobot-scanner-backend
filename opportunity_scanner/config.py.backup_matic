@@ -165,7 +165,7 @@ DEFAULT_UNIVERSE_PRESET = "High Liquidity"   # a new user's first-ever scan, bef
 
 DEFAULT_SECTOR_MAP: Dict[str, List[str]] = {
     "l1": ["BTC", "ETH", "SOL", "AVAX", "NEAR", "SUI", "APT", "ADA"],
-    "l2": ["ARB", "OP", "POL", "STRK", "ZK"],
+    "l2": ["ARB", "OP", "MATIC", "STRK", "ZK"],
     "defi": ["UNI", "AAVE", "LINK", "MKR", "CRV", "LDO"],
     "ai": ["TAO", "FET", "RNDR", "AGIX", "WLD"],
     "memecoin": ["DOGE", "SHIB", "PEPE", "WIF", "BONK", "FLOKI"],
