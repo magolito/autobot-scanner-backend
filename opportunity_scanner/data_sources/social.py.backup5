@@ -98,8 +98,10 @@ class SocialDataSource:
         result = await social_cache.get_or_fetch("coins_list", ttl_seconds=COINS_LIST_TTL_SECONDS, fetch_fn=fetch)
         return result or {}
 
-    _lc_semaphore = asyncio.Semaphore(3)
-    _lc_gap = 0.25
+    _ts_budget = 10        # time-series calls per scan, then stop asking
+    _ts_used = 0
+    _lc_semaphore = asyncio.Semaphore(2)
+    _lc_gap = 1.2
 
     async def _get_time_series_raw(self, symbol: str) -> dict:
         resp = await self._http.get(
@@ -112,8 +114,12 @@ class SocialDataSource:
         return resp.json()
 
     async def _fetch_time_series(self, symbol: str) -> Optional[list]:
-        async with type(self)._lc_semaphore:
-            await asyncio.sleep(type(self)._lc_gap)
+        cls = type(self)
+        if cls._ts_used >= cls._ts_budget:
+            return None          # snapshot data is already in hand
+        cls._ts_used += 1
+        async with cls._lc_semaphore:
+            await asyncio.sleep(cls._lc_gap)
         """Short history for a single coin, used to build velocity/sentiment
         baselines and detect whether mention volume is accelerating."""
         async def fetch():
