@@ -618,17 +618,6 @@ class ExchangeDataSource:
             "funding_rate": funding_source, "long_short_ratio": ls_source,
         }
 
-        # The live sources give a single current point, which isn't
-        # enough for a change calculation. Record it, then hand the
-        # pillar our accumulated series when it's richer.
-        from opportunity_scanner import oi_history as oi_history_store
-        _current_oi = (oi_history["oi_usd"].iloc[-1]
-                       if oi_history is not None and len(oi_history) else None)
-        oi_history_store.record(base, _current_oi)
-        _stored = oi_history_store.frame(base)
-        if _stored is not None and (oi_history is None or len(oi_history) < len(_stored)):
-            oi_history = _stored
-
         return MarketSnapshot(
             symbol=symbol,
             base=base,
@@ -639,7 +628,7 @@ class ExchangeDataSource:
             exchange_listings=exchange_listings,
             ohlcv=ohlcv,
             open_interest_history=oi_history,
-            open_interest_usd=_current_oi,
+            open_interest_usd=(oi_history["oi_usd"].iloc[-1] if oi_history is not None and len(oi_history) else None),
             funding_rate=funding,
             long_short_ratio=long_short,
             data_sources=data_sources,
