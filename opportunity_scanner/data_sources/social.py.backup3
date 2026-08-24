@@ -67,9 +67,9 @@ class SocialDataSource:
         await self._http.aclose()
 
     async def _get_coins_list_raw(self) -> dict:
-        resp = await self._http.get("/coins/list/v1")
+        resp = await self._http.get("/coins/list/v2")
         if resp.status_code == 429:
-            raise RuntimeError("LunarCrush rate limit hit (429) on /coins/list/v1")
+            raise RuntimeError("LunarCrush rate limit hit (429) on /coins/list/v2")
         if resp.status_code in (401, 403):
             raise RuntimeError(f"LunarCrush auth failed ({resp.status_code}) — check LUNARCRUSH_API_KEY is valid and not expired")
         resp.raise_for_status()
