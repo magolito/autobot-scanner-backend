@@ -115,7 +115,7 @@ class ExchangeDataSource:
         # iterative tuning process against a real, external rate limit,
         # not a one-shot fix — may need another adjustment based on
         # what the next real scan shows.
-        self._hyperliquid_semaphore = asyncio.Semaphore(5)
+        self._hyperliquid_semaphore = asyncio.Semaphore(6)
         # Hyperliquid rate-limits on requests-per-second, not just
         # concurrency — a small gap between releases keeps us under it.
         self._hyperliquid_gap = 0.15
