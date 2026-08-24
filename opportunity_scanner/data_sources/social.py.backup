@@ -75,22 +75,12 @@ class SocialDataSource:
         resp.raise_for_status()
         return resp.json()
 
-    _lc_unavailable = False   # 402/403 = problema de plan, no transitorio
-
     async def _fetch_coins_list(self) -> Dict[str, dict]:
-        if type(self)._lc_unavailable:
-            return {}
         async def fetch():
             try:
                 data = await self._breaker.call(self._get_coins_list_raw)
             except (CircuitOpenError, Exception) as e:  # noqa: BLE001
-                msg = str(e)
-                if "402" in msg or "403" in msg:
-                    type(self)._lc_unavailable = True
-                    print("[social] LunarCrush unavailable on this plan — "
-                          "social pillar disabled for this run")
-                else:
-                    print(f"[social] LunarCrush coins/list failed: {e}")
+                print(f"[social] LunarCrush coins/list failed: {e}")
                 return {}
             rows = data.get("data", [])
             return {r["symbol"].upper(): r for r in rows if r.get("symbol")}
