@@ -220,15 +220,6 @@ async def scan_start(
     return {"ok": True, "started": True}
 
 
-@app.get("/research/edge")
-async def research_edge(x_wi_token: str = Header(default=None)):
-    """Read-only: does the composite score precede better returns?"""
-    _require_token(x_wi_token)
-    import os
-    from opportunity_scanner.edge_study import report
-    return report(os.getenv("SCANNER_DB_PATH", "opportunity_scanner.db"))
-
-
 @app.get("/scan/{symbol}")
 async def scan_one(symbol: str):
     result = await _scanner.scan_symbol(base=symbol.upper())
